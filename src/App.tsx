@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import type { YTVideo, YTPlaylist, RepeatMode, ViewMode } from './types';
-import { searchVideos, searchPlaylists, fetchPlaylistItems, fetchTrendingMusic, fetchPopularPlaylists } from './api/youtube';
+import { searchVideos, searchPlaylists, fetchPlaylistItems, fetchTrendingMusic, fetchLatestMusic } from './api/youtube';
 import { useYouTubePlayer } from './hooks/useYouTubePlayer';
 import { useGoogleAuth } from './hooks/useGoogleAuth';
 import * as DB from './services/db';
@@ -43,6 +43,8 @@ function SongCardLoader({ count = 8 }: { count?: number }) {
   );
 }
 
+const LAST_PLAYBACK_STORAGE_PREFIX = 'last_playback:';
+
 function Hart({ on, sz = 18 }: { on: boolean; sz?: number }) {
   return (
     <svg width={sz} height={sz} viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill={on ? '#ef4444' : 'none'} stroke={on ? '#ef4444' : 'currentColor'} strokeWidth="2.5" /></svg>
@@ -81,7 +83,11 @@ export default function App() {
   const [a2pTarget, setA2pTarget] = useState<YTVideo | null>(null);
   const [viewUPL, setViewUPL] = useState<DB.UserPlaylist | null>(null);
   const [trending, setTrending] = useState<YTVideo[]>([]);
-  const [popPls, setPopPls] = useState<YTPlaylist[]>([]);
+  const [latestSongs, setLatestSongs] = useState<YTVideo[]>([]);
+  const [musicForYou, setMusicForYou] = useState<YTVideo[]>([]);
+  const [popularEpisodes, setPopularEpisodes] = useState<YTVideo[]>([]);
+  const [newMusicVideos, setNewMusicVideos] = useState<YTVideo[]>([]);
+  const [bollywoodIndian, setBollywoodIndian] = useState<YTVideo[]>([]);
   const [srVids, setSrVids] = useState<YTVideo[]>([]);
   const [srPls, setSrPls] = useState<YTPlaylist[]>([]);
   const [ytPl, setYtPl] = useState<YTPlaylist | null>(null);
@@ -96,7 +102,11 @@ export default function App() {
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const [completedTracks, setCompletedTracks] = useState<string[]>([]);
   const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
+  const [artistPanel, setArtistPanel] = useState<{ name: string; songs: YTVideo[]; loading: boolean } | null>(null);
   const { user, login, logout, authReady, authError } = useGoogleAuth();
+  const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const restoredPlaybackForUserRef = useRef<string | null>(null);
+  const lastPlaybackSavedRef = useRef<{ videoId: string; position: number; savedAt: number } | null>(null);
 
   const stateRef = useRef({ queue, idx, rep, shuf });
   const volRef = useRef(vol);
@@ -139,6 +149,7 @@ export default function App() {
     setToasts(p => [...p.slice(-2), { id, msg }]);
     setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 2500);
   };
+
   const lastAuthErrRef = useRef<string | null>(null);
   useEffect(() => {
     if (!authError || authError === lastAuthErrRef.current) return;
@@ -151,6 +162,17 @@ export default function App() {
   useEffect(() => {
     setShowProfileMenu(false);
   }, [user?.id]);
+  useEffect(() => {
+    const onPointerDown = (event: MouseEvent) => {
+      if (!showProfileMenu) return;
+      const target = event.target as Node | null;
+      if (profileMenuRef.current && target && !profileMenuRef.current.contains(target)) {
+        setShowProfileMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    return () => document.removeEventListener('mousedown', onPointerDown);
+  }, [showProfileMenu]);
 
   const goNext = useCallback((auto: boolean) => {
     const { queue: q, idx: ci, rep: r, shuf: s } = stateRef.current;
@@ -187,6 +209,31 @@ export default function App() {
     (goNext as any)(false);
   });
 
+  const persistLastPlayback = useCallback(async (force = false) => {
+    if (!user?.id || !currentTrack?.videoId || !player.isReady) return;
+    const nowPos = Math.max(0, Math.floor(player.getCurrentTime() || time || 0));
+    if (nowPos < 2 && !force) return;
+
+    const prev = lastPlaybackSavedRef.current;
+    const tooSoon = prev && Date.now() - prev.savedAt < 6000;
+    const sameTrack = prev?.videoId === currentTrack.videoId;
+    const smallDelta = prev ? Math.abs(prev.position - nowPos) < 5 : false;
+    if (!force && sameTrack && tooSoon && smallDelta) return;
+
+    const payload = { video: currentTrack, position: nowPos, updatedAt: Date.now() };
+    try {
+      localStorage.setItem(`${LAST_PLAYBACK_STORAGE_PREFIX}${user.id}`, JSON.stringify(payload));
+    } catch {
+      // ignore local storage errors
+    }
+    try {
+      await DB.saveLastPlayback(user.id, payload);
+      lastPlaybackSavedRef.current = { videoId: currentTrack.videoId, position: nowPos, savedAt: Date.now() };
+    } catch {
+      // don't block playback when persistence fails
+    }
+  }, [currentTrack, player, time, user?.id]);
+
   const goPrev = useCallback(() => {
     if (!queue.length) return;
     if (player.getCurrentTime() > 5) { player.seekTo(0); return; }
@@ -209,15 +256,23 @@ export default function App() {
     async function init() {
       setLoading(true);
       try {
-        const [t, pl, pub] = await Promise.all([
+        const [t, pub, indian, latest, forYou, episodes, newVideos] = await Promise.all([
           fetchTrendingMusic(12),
-          fetchPopularPlaylists(),
           DB.fetchPublicPlaylists(),
+          searchVideos('Bollywood Indian latest songs', 12),
+          fetchLatestMusic(12),
+          searchVideos('music videos for you', 12),
+          searchVideos('popular podcast episodes india', 12),
+          searchVideos('new music videos india', 12),
         ]);
         setTrending(t.videos);
         setTkTrend(t.nextPageToken);
-        setPopPls(pl);
         setPublicPls(pub);
+        setBollywoodIndian(indian.videos);
+        setLatestSongs(latest.videos);
+        setMusicForYou(forYou.videos);
+        setPopularEpisodes(episodes.videos);
+        setNewMusicVideos(newVideos.videos);
       } catch (err: any) {
         if (err.message === 'ADD_MORE_TOKENS') toast('Error: Add more API key tokens');
         else toast('Load failed');
@@ -233,6 +288,8 @@ export default function App() {
       if (!user?.id) {
         setLikedSongs([]);
         setUserPls([]);
+        restoredPlaybackForUserRef.current = null;
+        lastPlaybackSavedRef.current = null;
         return;
       }
       const [likes, ownPlaylists] = await Promise.all([
@@ -244,6 +301,48 @@ export default function App() {
     }
     loadUserData();
   }, [user?.id]);
+
+  useEffect(() => {
+    async function restoreLastPlayback() {
+      if (!user?.id || !player.isReady) return;
+      if (restoredPlaybackForUserRef.current === user.id) return;
+      restoredPlaybackForUserRef.current = user.id;
+      try {
+        let localSaved: DB.LastPlaybackState | null = null;
+        try {
+          const raw = localStorage.getItem(`${LAST_PLAYBACK_STORAGE_PREFIX}${user.id}`);
+          if (raw) {
+            const parsed = JSON.parse(raw) as DB.LastPlaybackState;
+            if (parsed?.video?.videoId) localSaved = parsed;
+          }
+        } catch {
+          // ignore malformed local storage payload
+        }
+
+        const remoteSaved = await DB.fetchLastPlayback(user.id);
+        const saved = (localSaved?.updatedAt || 0) >= (remoteSaved?.updatedAt || 0) ? localSaved : remoteSaved;
+        if (!saved?.video?.videoId) return;
+        const resumeAt = Math.max(0, Math.floor(saved.position || 0));
+        setQueue([saved.video]);
+        setIdx(0);
+        setTime(resumeAt);
+        setDur(saved.video.duration || 0);
+        player.loadVideo(saved.video.videoId);
+        setPlaying(false);
+        if (vol > 0) player.unMute();
+        player.setVolume(vol);
+        setTimeout(() => {
+          player.seekTo(resumeAt);
+          player.pause();
+          setPlaying(false);
+        }, 450);
+        toast(`Loaded last song: ${saved.video.title}`);
+      } catch {
+        // silently skip resume when API is unavailable
+      }
+    }
+    restoreLastPlayback();
+  }, [player.isReady, user?.id, vol]);
 
   const fetchMore = async () => {
     if (loadMore) return;
@@ -322,6 +421,23 @@ export default function App() {
   const navHome = () => { setView('home'); setShowLiked(false); setYtPl(null); setViewUPL(null); setQuery(''); };
   const navLiked = () => { setShowLiked(true); setView('playlist'); setYtPl(null); setViewUPL(null); };
   const navUPL = (pl: DB.UserPlaylist) => { setViewUPL(pl); setView('playlist'); setYtPl(null); setShowLiked(false); };
+  const handleBack = () => {
+    if (view === 'playlist' || showLiked || viewUPL || ytPl) {
+      navHome();
+      return;
+    }
+    if (view === 'search') {
+      if (query.trim()) {
+        setQuery('');
+        return;
+      }
+      navHome();
+      return;
+    }
+    if (globalThis.history.length > 1) {
+      globalThis.history.back();
+    }
+  };
 
   const doSearch = (q: string) => {
     setQuery(q); setView('search'); setLoading(true);
@@ -330,6 +446,24 @@ export default function App() {
       catch (err: any) { if (err.message === 'ADD_MORE_TOKENS') toast('Error: Add more API key tokens'); else toast('Search failed'); }
       setLoading(false);
     }, 500);
+  };
+
+  const fetchByTitle = (title: string) => {
+    setStab('v');
+    doSearch(title);
+  };
+
+  const openArtistSection = async (artistName: string) => {
+    setArtistPanel({ name: artistName, songs: [], loading: true });
+    try {
+      const result = await searchVideos(artistName, 24);
+      const normalized = artistName.trim().toLowerCase();
+      const filtered = result.videos.filter((song) => song.channelTitle.toLowerCase().includes(normalized));
+      setArtistPanel({ name: artistName, songs: filtered.length ? filtered : result.videos, loading: false });
+    } catch {
+      setArtistPanel({ name: artistName, songs: [], loading: false });
+      toast('Failed to load artist songs');
+    }
   };
 
   const playSongFromList = useCallback((list: YTVideo[], startIndex: number) => {
@@ -381,6 +515,36 @@ export default function App() {
   }, [currentTrack, player, player.isReady, playing]);
 
   useEffect(() => {
+    if (!playing || !user?.id || !currentTrack?.videoId) return;
+    const id = setInterval(() => {
+      void persistLastPlayback();
+    }, 7000);
+    return () => clearInterval(id);
+  }, [currentTrack?.videoId, persistLastPlayback, playing, user?.id]);
+
+  useEffect(() => {
+    if (!user?.id || !currentTrack?.videoId || playing) return;
+    void persistLastPlayback(true);
+  }, [currentTrack?.videoId, persistLastPlayback, playing, user?.id]);
+
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      void persistLastPlayback(true);
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        void persistLastPlayback(true);
+      }
+    };
+    globalThis.addEventListener('beforeunload', onBeforeUnload);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      globalThis.removeEventListener('beforeunload', onBeforeUnload);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [persistLastPlayback]);
+
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'ArrowUp') setVol((v) => Math.min(100, v + 5));
       if (e.key === 'ArrowDown') setVol((v) => Math.max(0, v - 5));
@@ -411,6 +575,19 @@ export default function App() {
   const curPlTitle = showLiked ? 'Liked Songs' : viewUPL ? viewUPL.name : ytPl?.title || '';
   const curPlGrad = showLiked ? '#e74' : grad(viewUPL?.id || ytPl?.id || 'x');
   const currentTrackUrl = currentTrack ? `https://www.youtube.com/watch?v=${currentTrack.videoId}` : '';
+  const quickPicks = (latestSongs.length ? latestSongs : trending).slice(0, 12);
+  const charts = trending.slice(0, 10);
+  const communityPlaylists = visiblePublicPls.slice(0, 8);
+  const trendingCommunityPlaylists = [...visiblePublicPls]
+    .sort((a, b) => (b.songs?.length || 0) - (a.songs?.length || 0))
+    .slice(0, 8);
+  const moodsGenres = ['Hindi', 'Feel good', '2000s', 'Romance', 'Sleep', 'Workout', '2010s', 'Sad', 'Commute', 'Monsoon', '1960s', 'Jazz', 'Folk & acoustic', 'Desi hip-hop', 'African', 'Energize', '1980s', 'Hindustani classical'];
+  const greeting = (() => {
+    const h = new Date().getHours();
+    if (h < 12) return 'Good morning';
+    if (h < 18) return 'Good afternoon';
+    return 'Good evening';
+  })();
 
   const handleCast = useCallback(async () => {
     if (!currentTrack || !currentTrackUrl) return;
@@ -481,12 +658,22 @@ export default function App() {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="flex items-center gap-4 px-6 py-3 bg-black/40 backdrop-blur-md border-b border-white/5 flex-shrink-0 z-10">
+          <button
+            onClick={handleBack}
+            className="w-10 h-10 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center text-white/80 hover:text-white transition"
+            title="Back"
+            aria-label="Back"
+          >
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M20 11H7.83l5.58-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
+            </svg>
+          </button>
           <div className="flex-1 max-w-xl relative">
             <input type="text" placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { (e.target as any).blur(); doSearch((e.target as any).value); } }} className="w-full bg-white/5 hover:bg-white/10 focus:bg-white/15 text-white rounded-full px-5 py-2 text-sm outline-none transition border border-transparent focus:border-white/10" />
           </div>
           <div className="ml-auto flex items-center gap-3">
             {user ? (
-              <div className="relative">
+              <div className="relative" ref={profileMenuRef}>
                 <button onClick={() => setShowProfileMenu((s) => !s)} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/10 flex items-center justify-center overflow-hidden">
                   {user.picture && !avatarLoadFailed ? (
                     <img
@@ -503,9 +690,9 @@ export default function App() {
                   )}
                 </button>
                 {showProfileMenu && (
-                  <div className="absolute right-0 mt-2 w-44 rounded-xl bg-[#1f1f1f] border border-white/10 shadow-2xl overflow-hidden z-20">
-                    <div className="px-3 py-2 text-xs text-white/60 truncate">{user.name}</div>
-                    <button onClick={() => { setShowProfileMenu(false); setShowLogoutConfirm(true); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/10">Logout</button>
+                  <div className="absolute right-0 mt-2 w-48 rounded-xl bg-[#1f1f1f]/95 border border-white/15 shadow-2xl overflow-hidden z-20 backdrop-blur-xl">
+                    <div className="px-3 py-2.5 text-xs text-white/70 truncate border-b border-white/10">{user.name}</div>
+                    <button onClick={() => { setShowProfileMenu(false); setShowLogoutConfirm(true); }} className="w-full text-left px-3 py-2.5 text-sm text-white hover:bg-white/10">Logout</button>
                   </div>
                 )}
               </div>
@@ -515,8 +702,306 @@ export default function App() {
           </div>
         </header>
         <main className="flex-1 overflow-y-auto cscr pb-32">
-          {view === 'home' && !showLiked && !viewUPL && (<div className="p-6"><h1 className="text-3xl font-black mb-8 italic uppercase tracking-tighter">Home</h1>{loading && !trending.length && <SongCardLoader count={12} />}<section className="mb-12"><h2 className="text-xl font-bold mb-4 flex justify-between">Trending <button onClick={() => { if (trending.length) playAll(trending); }} className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold uppercase tracking-widest">Play All</button></h2><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">{trending.map((v, i) => (<div key={v.videoId} className={`group bg-white/5 p-3 rounded-2xl hover:bg-white/10 transition cursor-pointer animate-card-in ${completedSet.has(v.videoId) ? 'ring-1 ring-emerald-400/40' : ''}`} onClick={() => playSongFromList(trending, i)}><div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-lg">{v.thumbnail ? <img src={v.thumbnailHigh || v.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition duration-500" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}<div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition flex items-center justify-center"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transform translate-y-4 group-hover:translate-y-0 transition shadow-xl">{playing && currentTrackId === v.videoId ? <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg> : <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>}</div></div><span className="absolute bottom-2 right-2 bg-black/80 text-[10px] font-black px-1.5 py-0.5 rounded-md">{v.durationFormatted}</span>{completedSet.has(v.videoId) && <span className="absolute top-2 left-2 bg-emerald-500/90 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">Played</span>}</div><div className="min-w-0 relative"><h3 className="text-sm font-bold truncate pr-6 mb-1">{v.title}</h3><p className="text-xs text-white/40 truncate">{v.channelTitle}</p><div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 flex flex-col gap-2 transition"><button onClick={e => { e.stopPropagation(); handleLike(v); }} className="text-white hover:text-red-500"><Hart on={likedSet.has(v.videoId)} sz={16} /></button><button onClick={e => { e.stopPropagation(); setA2pTarget(v); }} className="text-white/40 hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z" /></svg></button></div></div></div>))}</div></section><section><h2 className="text-xl font-bold mb-4">Popular Playlists</h2><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{popPls.map(p => (<div key={p.id} className="group bg-white/5 p-4 rounded-2xl hover:bg-white/10 transition cursor-pointer animate-card-in" onClick={() => openYTPl(p)}><div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-xl">{p.thumbnail ? <img src={p.thumbnailHigh || p.thumbnail} className="w-full h-full object-cover group-hover:scale-105 transition duration-700" alt="" /> : <div className="w-full h-full" style={{ background: grad(p.id) }} />}<div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 flex items-center justify-center transition"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-xl"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div></div><div className="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{p.itemCount} SONGS</div></div><h3 className="text-sm font-bold truncate mb-1 uppercase tracking-tighter italic">{p.title}</h3><p className="text-[10px] font-black text-white/30 tracking-widest uppercase truncate">{p.channelTitle}</p></div>))}</div></section></div>)}
-          {view === 'search' && (<div className="p-6"><div className="flex gap-4 mb-8"><button onClick={() => setStab('v')} className={`px-6 py-2 rounded-full text-xs font-black transition ${stab === 'v' ? 'bg-white text-black' : 'bg-white/5 text-white/40'}`}>Songs</button><button onClick={() => setStab('p')} className={`px-6 py-2 rounded-full text-xs font-black transition ${stab === 'p' ? 'bg-white text-black' : 'bg-white/5 text-white/40'}`}>Playlists</button></div>{loading ? <Spin /> : stab === 'v' ? (<div className="space-y-1">{srVids.map((v, i) => (<div key={v.videoId + i} onClick={() => playSongFromList(srVids, i)} className={`grid grid-cols-[40px_1fr_1fr_140px] gap-4 items-center px-4 py-3 rounded-xl cursor-pointer group transition duration-200 ${currentTrackId === v.videoId ? 'bg-white/10 shadow-md border border-white/5' : 'hover:bg-white/5 border border-transparent'}`}><div className="flex items-center justify-center">{currentTrackId === v.videoId && playing ? <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" /> : <span className="text-xs font-black text-white/20 group-hover:hidden">{i + 1}</span>}<svg className="hidden group-hover:block" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div><div className="flex items-center gap-4 min-w-0"><div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 shadow-md">{v.thumbnail ? <img src={v.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}</div><div className="min-w-0"><div className={`text-sm font-bold truncate ${currentTrackId === v.videoId ? 'text-red-400' : 'text-white'}`}>{v.title}</div><div className="text-[10px] font-bold text-white/30 tracking-wider uppercase truncate">{v.channelTitle}</div></div></div><div className="text-xs font-medium text-white/30 truncate hidden md:block">{v.channelTitle}</div><div className="flex items-center justify-end gap-3" onClick={e => e.stopPropagation()}><button onClick={() => handleLike(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-500 transition"><Hart on={likedSet.has(v.videoId)} sz={16} /></button><button onClick={() => setA2pTarget(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z" /></svg></button><span className="text-[10px] font-mono font-bold text-white/20 w-10 text-right">{v.durationFormatted}</span></div></div>))}</div>) : (<div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{srPls.map(p => (<div key={p.id} className="group bg-white/5 p-4 rounded-2xl hover:bg-white/10 transition cursor-pointer" onClick={() => openYTPl(p)}><div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-xl">{p.thumbnail ? <img src={p.thumbnailHigh || p.thumbnail} className="w-full h-full object-cover group-hover:scale-105 transition duration-700" alt="" /> : <div className="w-full h-full" style={{ background: grad(p.id) }} />}<div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 flex items-center justify-center transition"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-xl"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div></div><div className="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{p.itemCount} SONGS</div></div><h3 className="text-sm font-bold truncate mb-1 uppercase tracking-tighter italic">{p.title}</h3><p className="text-[10px] font-black text-white/30 tracking-widest uppercase truncate">{p.channelTitle}</p></div>))}</div>)}</div>)}
+          {view === 'home' && !showLiked && !viewUPL && (
+            <div className="p-6 space-y-10">
+              <h1 className="text-3xl font-black tracking-tight">{greeting}</h1>
+              {loading && !trending.length && <SongCardLoader count={12} />}
+
+              <section>
+                <div className="flex justify-between items-center mb-4">
+                  <h2 className="text-2xl font-black tracking-tight">Quick picks</h2>
+                  <button onClick={() => { if (quickPicks.length) playAll(quickPicks); }} className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold uppercase tracking-widest">Play all</button>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                  {quickPicks.map((v, i) => (
+                    <button key={`${v.videoId}-quick`} onClick={() => playSongFromList(quickPicks, i)} className="group flex items-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-2.5 text-left transition">
+                      <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0">
+                        {v.thumbnail ? <img src={v.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); fetchByTitle(v.title); }}
+                          className="text-sm font-bold truncate text-left hover:underline w-full"
+                          title={`Find songs like ${v.title}`}
+                        >
+                          {v.title}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openArtistSection(v.channelTitle); }}
+                          className="text-xs text-white/55 truncate text-left hover:text-white hover:underline w-full"
+                          title={`View songs by ${v.channelTitle}`}
+                        >
+                          {v.channelTitle}
+                        </button>
+                      </div>
+                      <span className="text-[10px] text-white/55 font-mono">{v.durationFormatted}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-bold">Music videos for you</h2>
+                  <button
+                    onClick={() => { if (musicForYou.length) playAll(musicForYou); }}
+                    className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold uppercase tracking-widest"
+                  >
+                    Play all
+                  </button>
+                </div>
+                {musicForYou.length ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                    {musicForYou.map((v, i) => (
+                      <button
+                        key={`for-you-${v.videoId}`}
+                        onClick={() => playSongFromList(musicForYou, i)}
+                        className="group bg-white/5 p-3 rounded-2xl hover:bg-white/10 transition text-left"
+                      >
+                        <div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-lg">
+                          {v.thumbnail ? <img src={v.thumbnailHigh || v.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition duration-500" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}
+                          <span className="absolute bottom-2 right-2 bg-black/80 text-[10px] font-black px-1.5 py-0.5 rounded-md">{v.durationFormatted}</span>
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); fetchByTitle(v.title); }}
+                          className="text-sm font-bold truncate text-left hover:underline w-full"
+                        >
+                          {v.title}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openArtistSection(v.channelTitle); }}
+                          className="text-xs text-white/40 truncate text-left hover:text-white hover:underline w-full"
+                        >
+                          {v.channelTitle}
+                        </button>
+                      </button>
+                    ))}
+                  </div>
+                ) : <SongCardLoader count={6} />}
+              </section>
+
+              <section>
+                <h2 className="text-xl font-bold mb-4">Trending music</h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
+                  {trending.map((v, i) => (
+                    <div key={v.videoId} className={`group bg-white/5 p-3 rounded-2xl hover:bg-white/10 transition cursor-pointer animate-card-in ${completedSet.has(v.videoId) ? 'ring-1 ring-emerald-400/40' : ''}`} onClick={() => playSongFromList(trending, i)}>
+                      <div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-lg">
+                        {v.thumbnail ? <img src={v.thumbnailHigh || v.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition duration-500" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}
+                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition flex items-center justify-center"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transform translate-y-4 group-hover:translate-y-0 transition shadow-xl">{playing && currentTrackId === v.videoId ? <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg> : <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>}</div></div>
+                        <span className="absolute bottom-2 right-2 bg-black/80 text-[10px] font-black px-1.5 py-0.5 rounded-md">{v.durationFormatted}</span>
+                        {completedSet.has(v.videoId) && <span className="absolute top-2 left-2 bg-emerald-500/90 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">Played</span>}
+                      </div>
+                      <div className="min-w-0 relative">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); fetchByTitle(v.title); }}
+                          className="text-sm font-bold truncate pr-6 mb-1 text-left hover:underline w-full"
+                          title={`Find songs like ${v.title}`}
+                        >
+                          {v.title}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openArtistSection(v.channelTitle); }}
+                          className="text-xs text-white/40 truncate text-left hover:text-white hover:underline w-full"
+                          title={`View songs by ${v.channelTitle}`}
+                        >
+                          {v.channelTitle}
+                        </button>
+                        <div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 flex flex-col gap-2 transition"><button onClick={e => { e.stopPropagation(); handleLike(v); }} className="text-white hover:text-red-500"><Hart on={likedSet.has(v.videoId)} sz={16} /></button><button onClick={e => { e.stopPropagation(); setA2pTarget(v); }} className="text-white/40 hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z" /></svg></button></div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-bold">From the community</h2>
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-white/45">Public playlists</span>
+                </div>
+                {communityPlaylists.length ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {communityPlaylists.map((pl) => (
+                      <button
+                        key={`community-${pl.id}`}
+                        onClick={() => navUPL(pl)}
+                        className="text-left rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition p-4"
+                      >
+                        <p className="text-sm font-bold truncate">{pl.name}</p>
+                        <p className="text-xs text-white/55 mt-1">{pl.songs.length} songs</p>
+                      </button>
+                    ))}
+                  </div>
+                ) : <p className="text-sm text-white/55">No public community playlists yet.</p>}
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-bold">Charts</h2>
+                  <button
+                    onClick={() => { if (charts.length) playAll(charts); }}
+                    className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold uppercase tracking-widest"
+                  >
+                    Play chart
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {charts.map((song, i) => (
+                    <button
+                      key={`chart-${song.videoId}`}
+                      onClick={() => playSongFromList(charts, i)}
+                      className="w-full text-left grid grid-cols-[24px_44px_1fr_auto] gap-3 items-center rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-2 transition"
+                    >
+                      <span className="text-xs text-white/50 font-black">{i + 1}</span>
+                      <img src={song.thumbnail} alt={song.title} className="w-11 h-11 rounded-lg object-cover" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold truncate">{song.title}</p>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openArtistSection(song.channelTitle); }}
+                          className="text-xs text-white/55 truncate hover:text-white hover:underline"
+                        >
+                          {song.channelTitle}
+                        </button>
+                      </div>
+                      <span className="text-[10px] font-mono text-white/45">{song.durationFormatted}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-bold">Bollywood &amp; Indian</h2>
+                  <button
+                    onClick={() => { if (bollywoodIndian.length) playAll(bollywoodIndian); }}
+                    className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold uppercase tracking-widest"
+                  >
+                    Play all
+                  </button>
+                </div>
+                {bollywoodIndian.length ? (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                    {bollywoodIndian.map((song, i) => (
+                      <button
+                        key={`india-${song.videoId}`}
+                        onClick={() => playSongFromList(bollywoodIndian, i)}
+                        className="text-left rounded-2xl border border-white/10 bg-white/5 hover:bg-white/10 transition p-3"
+                      >
+                        <img src={song.thumbnailHigh || song.thumbnail} alt={song.title} className="w-full aspect-square object-cover rounded-xl mb-3" />
+                        <p className="text-sm font-bold truncate">{song.title}</p>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openArtistSection(song.channelTitle); }}
+                          className="text-xs text-white/50 truncate hover:text-white hover:underline"
+                        >
+                          {song.channelTitle}
+                        </button>
+                      </button>
+                    ))}
+                  </div>
+                ) : <SongCardLoader count={6} />}
+              </section>
+
+              <section>
+                <div className="flex items-center justify-between mb-4">
+                  <h2 className="text-xl font-bold">Trending community playlists</h2>
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-white/45">Most songs</span>
+                </div>
+                {trendingCommunityPlaylists.length ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                    {trendingCommunityPlaylists.map((pl) => (
+                      <button
+                        key={`tr-community-${pl.id}`}
+                        onClick={() => navUPL(pl)}
+                        className="text-left rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition p-4"
+                      >
+                        <p className="text-sm font-bold truncate">{pl.name}</p>
+                        <p className="text-xs text-white/55 mt-1">{pl.songs.length} songs</p>
+                      </button>
+                    ))}
+                  </div>
+                ) : <p className="text-sm text-white/55">Trending playlists will appear here once community playlists are available.</p>}
+              </section>
+            </div>
+          )}
+          {view === 'search' && !query.trim() && (
+            <div className="p-6 space-y-10">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {['New releases', 'Charts', 'Moods & genres', 'Podcasts'].map((chip) => (
+                  <button key={chip} className="rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 px-4 py-3 text-sm font-bold text-left">
+                    {chip}
+                  </button>
+                ))}
+              </div>
+
+              <section>
+                <h2 className="text-4xl font-black tracking-tight mb-4">New albums & singles</h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                  {(latestSongs.length ? latestSongs : trending).slice(0, 12).map((v, i) => (
+                    <button key={`exp-release-${v.videoId}`} onClick={() => playSongFromList((latestSongs.length ? latestSongs : trending).slice(0, 12), i)} className="text-left">
+                      <img src={v.thumbnailHigh || v.thumbnail} alt={v.title} className="w-full aspect-square object-cover rounded-xl mb-2" />
+                      <p className="text-sm font-bold truncate">{v.title}</p>
+                      <p className="text-xs text-white/60 truncate">{v.channelTitle}</p>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <h2 className="text-4xl font-black tracking-tight mb-4">Moods & genres</h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
+                  {moodsGenres.map((mood) => (
+                    <button key={mood} onClick={() => doSearch(mood)} className="rounded-lg bg-white/10 hover:bg-white/15 border border-white/10 px-3 py-2 text-sm font-semibold text-left">
+                      {mood}
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <h2 className="text-4xl font-black tracking-tight mb-4">Popular episodes</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {popularEpisodes.slice(0, 9).map((v, i) => (
+                    <button key={`exp-ep-${v.videoId}`} onClick={() => playSongFromList(popularEpisodes, i)} className="grid grid-cols-[120px_1fr] gap-3 items-center text-left rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 p-2">
+                      <img src={v.thumbnail} alt={v.title} className="w-[120px] h-[68px] object-cover rounded-lg" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold truncate">{v.title}</p>
+                        <p className="text-xs text-white/60 truncate">{v.channelTitle}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <h2 className="text-4xl font-black tracking-tight mb-4">Trending</h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {charts.slice(0, 12).map((v, i) => (
+                    <button key={`exp-trend-${v.videoId}`} onClick={() => playSongFromList(charts, i)} className="grid grid-cols-[24px_52px_1fr] gap-3 items-center text-left rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 p-2">
+                      <span className="text-sm font-black text-white/70">{i + 1}</span>
+                      <img src={v.thumbnail} alt={v.title} className="w-12 h-12 object-cover rounded-lg" />
+                      <div className="min-w-0">
+                        <p className="text-sm font-bold truncate">{v.title}</p>
+                        <p className="text-xs text-white/60 truncate">{v.channelTitle}</p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <section>
+                <h2 className="text-4xl font-black tracking-tight mb-4">New music videos</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                  {newMusicVideos.slice(0, 8).map((v, i) => (
+                    <button key={`exp-new-video-${v.videoId}`} onClick={() => playSongFromList(newMusicVideos, i)} className="text-left">
+                      <img src={v.thumbnailHigh || v.thumbnail} alt={v.title} className="w-full aspect-video object-cover rounded-xl mb-2" />
+                      <p className="text-sm font-bold truncate">{v.title}</p>
+                      <p className="text-xs text-white/60 truncate">{v.channelTitle}</p>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>
+          )}
+          {view === 'search' && query.trim() && (<div className="p-6"><div className="flex gap-4 mb-8"><button onClick={() => setStab('v')} className={`px-6 py-2 rounded-full text-xs font-black transition ${stab === 'v' ? 'bg-white text-black' : 'bg-white/5 text-white/40'}`}>Songs</button><button onClick={() => setStab('p')} className={`px-6 py-2 rounded-full text-xs font-black transition ${stab === 'p' ? 'bg-white text-black' : 'bg-white/5 text-white/40'}`}>Playlists</button></div>{loading ? <Spin /> : stab === 'v' ? (<div className="space-y-1">{srVids.map((v, i) => (<div key={v.videoId + i} onClick={() => playSongFromList(srVids, i)} className={`grid grid-cols-[40px_1fr_1fr_140px] gap-4 items-center px-4 py-3 rounded-xl cursor-pointer group transition duration-200 ${currentTrackId === v.videoId ? 'bg-white/10 shadow-md border border-white/5' : 'hover:bg-white/5 border border-transparent'}`}><div className="flex items-center justify-center">{currentTrackId === v.videoId && playing ? <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" /> : <span className="text-xs font-black text-white/20 group-hover:hidden">{i + 1}</span>}<svg className="hidden group-hover:block" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div><div className="flex items-center gap-4 min-w-0"><div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 shadow-md">{v.thumbnail ? <img src={v.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}</div><div className="min-w-0"><div className={`text-sm font-bold truncate ${currentTrackId === v.videoId ? 'text-red-400' : 'text-white'}`}>{v.title}</div><div className="text-[10px] font-bold text-white/30 tracking-wider uppercase truncate">{v.channelTitle}</div></div></div><div className="text-xs font-medium text-white/30 truncate hidden md:block">{v.channelTitle}</div><div className="flex items-center justify-end gap-3" onClick={e => e.stopPropagation()}><button onClick={() => handleLike(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-500 transition"><Hart on={likedSet.has(v.videoId)} sz={16} /></button><button onClick={() => setA2pTarget(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z" /></svg></button><span className="text-[10px] font-mono font-bold text-white/20 w-10 text-right">{v.durationFormatted}</span></div></div>))}</div>) : (<div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{srPls.map(p => (<div key={p.id} className="group bg-white/5 p-4 rounded-2xl hover:bg-white/10 transition cursor-pointer" onClick={() => openYTPl(p)}><div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-xl">{p.thumbnail ? <img src={p.thumbnailHigh || p.thumbnail} className="w-full h-full object-cover group-hover:scale-105 transition duration-700" alt="" /> : <div className="w-full h-full" style={{ background: grad(p.id) }} />}<div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 flex items-center justify-center transition"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-xl"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div></div><div className="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{p.itemCount} SONGS</div></div><h3 className="text-sm font-bold truncate mb-1 uppercase tracking-tighter italic">{p.title}</h3><p className="text-[10px] font-black text-white/30 tracking-widest uppercase truncate">{p.channelTitle}</p></div>))}</div>)}</div>)}
           {view === 'playlist' && (<div><div className="relative p-8 pt-16 flex items-end gap-8 overflow-hidden"><div className="absolute inset-0 -z-10" style={{ background: curPlGrad }} /><div className="absolute inset-0 -z-10 bg-gradient-to-b from-black/20 to-[#121212]" /><div className="w-48 h-48 bg-white/5 rounded-xl shadow-2xl flex items-center justify-center text-8xl flex-shrink-0 overflow-hidden">{showLiked ? '❤️' : viewUPL ? '🎵' : ytPl?.thumbnailHigh ? <img src={ytPl.thumbnailHigh} className="w-full h-full object-cover" alt="" /> : '📀'}</div><div><p className="text-sm font-bold uppercase tracking-widest text-white/70 mb-2">{showLiked ? 'Collection' : 'Playlist'}</p><h1 className="text-4xl md:text-7xl font-black mb-4 line-clamp-2 uppercase italic tracking-tighter">{curPlTitle}</h1><p className="text-sm font-bold text-white/60">{curPlSongs.length} songs</p></div></div><div className="p-8"><button onClick={() => { if (curPlSongs.length) playAll(curPlSongs); }} className="w-14 h-14 rounded-full bg-red-600 flex items-center justify-center mb-8 shadow-xl hover:scale-105 transition"><svg width="28" height="28" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg></button>{loadPl ? <Spin /> : <div className="space-y-1">{curPlSongs.map((v, i) => (<div key={v.videoId + i} onClick={() => playSongFromList(curPlSongs, i)} className={`grid grid-cols-[40px_1fr_1fr_140px] gap-4 items-center px-4 py-3 rounded-xl cursor-pointer group transition duration-200 ${currentTrackId === v.videoId ? 'bg-white/10 shadow-md border border-white/5' : 'hover:bg-white/5 border border-transparent'}`}><div className="flex items-center justify-center">{currentTrackId === v.videoId && playing ? <div className="flex items-end gap-0.5 h-4"><span className="w-[2.5px] bg-red-500 rounded-full h-[40%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[90%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[60%] animate-pulse" /></div> : <span className="text-xs font-black text-white/20 group-hover:hidden">{i + 1}</span>}<svg className="hidden group-hover:block" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div><div className="flex items-center gap-4 min-w-0"><div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 shadow-md">{v.thumbnail ? <img src={v.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}</div><div className="min-w-0"><div className={`text-sm font-bold truncate ${currentTrackId === v.videoId ? 'text-red-400' : 'text-white'}`}>{v.title}</div><div className="text-[10px] font-bold text-white/30 tracking-wider uppercase truncate">{v.channelTitle}</div></div></div><div className="text-xs font-medium text-white/30 truncate hidden md:block">{v.channelTitle}</div><div className="flex items-center justify-end gap-3" onClick={e => e.stopPropagation()}><button onClick={() => handleLike(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-500 transition"><Hart on={likedSet.has(v.videoId)} sz={16} /></button><button onClick={() => setA2pTarget(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z" /></svg></button>{viewUPL && <button onClick={() => handleRemoveFromPl(viewUPL.id, v.videoId)} className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-500 transition text-sm">✕</button>}<span className="text-[10px] font-mono font-bold text-white/20 w-10 text-right">{v.durationFormatted}</span></div></div>))}</div>}</div></div>)}
           <div id="sentinel" className="h-4 w-full" />{loadMore && <Spin />}
         </main>
@@ -565,10 +1050,12 @@ export default function App() {
               <button onClick={goPrev} className="text-white/80 hover:text-white transition"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg></button>
               <button onClick={togglePlayback} disabled={!player.isReady || !currentTrack} className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center shadow-lg">{playing ? <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg> : <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>}</button>
               <button onClick={() => (goNext as any)(false)} className="text-white/80 hover:text-white transition"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z" /></svg></button>
-              <button onClick={handleCast} disabled={!currentTrack} className="text-white/70 hover:text-white transition disabled:opacity-40" title="Cast / Share"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M1 18h2c0-2.76-2.24-5-5-5v2c1.66 0 3 1.34 3 3zm0-4h2c0-4.42-3.58-8-8-8v2c3.31 0 6 2.69 6 6zm0-8v2c4.97 0 9 4.03 9 9h2c0-6.08-4.92-11-11-11zm20-3H3c-1.1 0-2 .9-2 2v6h2V5h18v14h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" /></svg></button>
               <button onClick={() => setRep(r => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')} className={`relative ${rep !== 'off' ? 'text-red-500' : 'text-white/40 hover:text-white'}`}><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" /></svg>{rep === 'one' && <span className="absolute -top-1 -right-1 text-[8px] font-bold">1</span>}</button>
             </div>
             <div className="flex items-center justify-end gap-3 w-1/3">
+              <button onClick={handleCast} disabled={!currentTrack} className="w-9 h-9 rounded-full bg-white/15 border border-white/20 text-white hover:bg-red-500/80 transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center" title="Cast / Share">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M1 18h2c0-2.76-2.24-5-5-5v2c1.66 0 3 1.34 3 3zm0-4h2c0-4.42-3.58-8-8-8v2c3.31 0 6 2.69 6 6zm0-8v2c4.97 0 9 4.03 9 9h2c0-6.08-4.92-11-11-11zm20-3H3c-1.1 0-2 .9-2 2v6h2V5h18v14h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" /></svg>
+              </button>
               <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className="text-white/40"><path d="M7 9v6h4l5 5V4l-5 5H7zm9.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z" /></svg>
               <input
                 type="range"
@@ -623,6 +1110,50 @@ export default function App() {
           </div>
         </div>
       )}
+      {artistPanel && (
+        <div className="fixed inset-0 z-[103] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setArtistPanel(null)}>
+          <div className="bg-[#222] rounded-2xl p-6 w-full max-w-2xl shadow-2xl border border-white/10 max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <div>
+                <p className="text-xs uppercase tracking-[0.22em] text-white/50">Artist section</p>
+                <h3 className="text-xl font-bold text-white truncate">{artistPanel.name}</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { if (artistPanel.songs.length) playAll(artistPanel.songs); }}
+                  className="px-4 py-2 rounded-full bg-white text-black text-xs font-black uppercase tracking-wide disabled:opacity-50"
+                  disabled={!artistPanel.songs.length}
+                >
+                  Play all
+                </button>
+                <button onClick={() => setArtistPanel(null)} className="px-3 py-2 rounded-full bg-white/10 hover:bg-white/20 text-xs font-bold uppercase tracking-wide">Close</button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto cscr pr-1">
+              {artistPanel.loading ? <Spin /> : (
+                artistPanel.songs.length ? (
+                  <div className="space-y-1">
+                    {artistPanel.songs.map((song, i) => (
+                      <button
+                        key={song.videoId + i}
+                        onClick={() => playSongFromList(artistPanel.songs, i)}
+                        className="w-full grid grid-cols-[52px_1fr_auto] items-center gap-3 px-3 py-2 rounded-xl hover:bg-white/8 text-left"
+                      >
+                        <img src={song.thumbnail} alt={song.title} className="w-12 h-12 rounded-lg object-cover" />
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold truncate">{song.title}</p>
+                          <p className="text-xs text-white/55 truncate">{song.channelTitle}</p>
+                        </div>
+                        <span className="text-[10px] text-white/55 font-mono">{song.durationFormatted}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : <p className="text-sm text-white/60 py-6 text-center">No songs found for this artist.</p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
       {showLogoutConfirm && (
         <div className="fixed inset-0 z-[102] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowLogoutConfirm(false)}>
           <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
@@ -638,7 +1169,7 @@ export default function App() {
       {a2pTarget && (<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setA2pTarget(null)}><div className="bg-[#222] rounded-2xl p-6 w-full max-w-sm shadow-2xl flex flex-col max-h-[70vh] border border-white/5" onClick={e => e.stopPropagation()}><h3 className="text-xl font-bold mb-4 uppercase tracking-widest italic">Add to Playlist</h3><button onClick={() => { setA2pTarget(null); setShowCreate(true); }} className="flex items-center gap-3 p-3 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white mb-4 transition"><span className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center text-xl">+</span><span className="text-sm font-bold">New Playlist</span></button><div className="flex-1 overflow-y-auto cscr space-y-1">{userPls.map(p => (<button key={p.id} onClick={() => handleAddToPl(p.id, a2pTarget)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition text-left"><div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold" style={{ background: grad(p.id) }}>♪</div><div className="min-w-0 flex-1"><div className="text-sm font-bold truncate">{p.name}</div><div className="text-xs opacity-50">{p.songs.length} songs</div></div></button>))}</div><button onClick={() => setA2pTarget(null)} className="mt-4 py-3 rounded-xl bg-white/5 font-bold hover:bg-white/10 transition text-sm">Close</button></div></div>)}
       <div className="fixed bottom-24 right-4 flex flex-col gap-2 z-[110] pointer-events-none">{toasts.map(t => <div key={t.id} className="bg-red-600 text-white text-[10px] font-black py-2 px-4 rounded-full shadow-2xl animate-slide-up uppercase tracking-widest">{t.msg}</div>)}</div>
       <div id="yt-player-hidden" className="fixed -left-[9999px] top-0 w-0 h-0 opacity-0 pointer-events-none" />
-      <style>{`.cscr::-webkit-scrollbar{width:6px}.cscr::-webkit-scrollbar-track{background:transparent}.cscr::-webkit-scrollbar-thumb{background:rgba(255,255,255,.05);border-radius:9px} .line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden} .animate-slide-up{animation:su .3s ease-out} .glass-player{background:linear-gradient(120deg,rgba(255,255,255,.14),rgba(255,255,255,.08));box-shadow:0 24px 70px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.15)} .seek-slider,.volume-slider{-webkit-appearance:none;appearance:none;height:5px;border-radius:999px;background:rgba(255,255,255,.18);outline:none;cursor:pointer} .seek-slider::-webkit-slider-thumb,.volume-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444;box-shadow:0 2px 10px rgba(0,0,0,.4)} .seek-slider::-moz-range-thumb,.volume-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444} .seek-slider:disabled{opacity:.4;cursor:not-allowed} .animate-card-in{animation:cardIn .45s ease both} .shimmer{background:linear-gradient(90deg,rgba(255,255,255,.06) 0%,rgba(255,255,255,.16) 50%,rgba(255,255,255,.06) 100%);background-size:200% 100%;animation:sh 1.4s infinite} @keyframes su{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}} @keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}} @keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}`}</style>
+      <style>{`.cscr::-webkit-scrollbar{width:6px}.cscr::-webkit-scrollbar-track{background:transparent}.cscr::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:9px} .line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden} .animate-slide-up{animation:su .3s ease-out} .glass-player{background:linear-gradient(120deg,rgba(255,255,255,.20),rgba(255,255,255,.11));box-shadow:0 24px 70px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.25)} .seek-slider,.volume-slider{-webkit-appearance:none;appearance:none;height:6px;border-radius:999px;background:rgba(255,255,255,.24);outline:none;cursor:pointer} .seek-slider::-webkit-slider-thumb,.volume-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444;box-shadow:0 2px 10px rgba(0,0,0,.4)} .seek-slider::-moz-range-thumb,.volume-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444} .seek-slider:disabled{opacity:.4;cursor:not-allowed} .animate-card-in{animation:cardIn .45s ease both} .shimmer{background:linear-gradient(90deg,rgba(255,255,255,.06) 0%,rgba(255,255,255,.16) 50%,rgba(255,255,255,.06) 100%);background-size:200% 100%;animation:sh 1.4s infinite} @keyframes su{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}} @keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}} @keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}`}</style>
     </div>
   );
 }

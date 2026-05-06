@@ -48,6 +48,11 @@ const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, index: true },
   picture: { type: String, default: '' },
+  lastPlayback: {
+    video: { type: videoSchema, default: null },
+    position: { type: Number, default: 0 },
+    updatedAt: { type: Number, default: 0 },
+  },
   createdAt: { type: Number, required: true },
   updatedAt: { type: Number, required: true },
 });

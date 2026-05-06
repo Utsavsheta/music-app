@@ -203,6 +203,24 @@ export async function fetchTrendingMusic(maxResults = 12, pageToken?: string): P
   return { videos: mapVideoItems(data.items), nextPageToken: data.nextPageToken || null };
 }
 
+// ── Fetch Latest Music Videos ──
+export async function fetchLatestMusic(maxResults = 12, pageToken?: string): Promise<PaginatedVideos> {
+  const params: any = {
+    part: 'snippet',
+    type: 'video',
+    videoCategoryId: '10',
+    order: 'date',
+    q: 'latest music songs',
+    maxResults: maxResults.toString(),
+  };
+  if (pageToken) params.pageToken = pageToken;
+
+  const data = await fetchYoutube('/search', params);
+  const videoIds = data.items?.map((item: any) => item.id?.videoId).filter(Boolean).join(',');
+  const videos = await fetchVideoDetails(videoIds);
+  return { videos, nextPageToken: data.nextPageToken || null };
+}
+
 // ── Fetch Popular Playlists ──
 export async function fetchPopularPlaylists(): Promise<YTPlaylist[]> {
   const queries = ['Top Hits 2025', 'Pop Music Playlist', 'Lo-Fi Hip Hop', 'Chill Vibes'];

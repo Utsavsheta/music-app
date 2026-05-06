@@ -18,6 +18,13 @@ interface UserLike {
 export interface UserProfile extends AppUser {
   createdAt: number;
   updatedAt: number;
+  lastPlayback?: LastPlaybackState;
+}
+
+export interface LastPlaybackState {
+  video: YTVideo;
+  position: number;
+  updatedAt: number;
 }
 
 const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
@@ -75,6 +82,26 @@ export async function fetchUserProfile(userId: string): Promise<UserProfile | nu
   if (!userId) return null;
   const users = await apiFetch<UserProfile[]>(`/users?id=${encodeURIComponent(userId)}`);
   return users[0] || null;
+}
+
+export async function saveLastPlayback(userId: string, playback: LastPlaybackState): Promise<void> {
+  if (!userId || !playback?.video?.videoId) return;
+  await apiFetch(`/users/${encodeURIComponent(userId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      lastPlayback: {
+        video: playback.video,
+        position: Math.max(0, Math.floor(playback.position || 0)),
+        updatedAt: playback.updatedAt || Date.now(),
+      },
+      updatedAt: Date.now(),
+    }),
+  });
+}
+
+export async function fetchLastPlayback(userId: string): Promise<LastPlaybackState | null> {
+  const profile = await fetchUserProfile(userId);
+  return profile?.lastPlayback || null;
 }
 
 /* ─── Liked Songs ─── */
