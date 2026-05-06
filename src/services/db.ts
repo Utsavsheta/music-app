@@ -20,10 +20,17 @@ export interface UserProfile extends AppUser {
   updatedAt: number;
 }
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+const configuredApiBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
+const API_BASE = configuredApiBase || (import.meta.env.DEV ? 'http://localhost:3001' : '/api');
+
+function buildApiUrl(path: string): string {
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+  if (API_BASE.endsWith('/')) return `${API_BASE.slice(0, -1)}${normalizedPath}`;
+  return `${API_BASE}${normalizedPath}`;
+}
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(buildApiUrl(path), {
     headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
   });
@@ -33,15 +40,18 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 /* ─── Users ─── */
 export async function upsertUserProfile(user: AppUser): Promise<UserProfile> {
-  const existing = await apiFetch<UserProfile[]>(`/users?id=${encodeURIComponent(user.id)}`);
+  const email = user.email.trim().toLowerCase();
+  const byEmail = email ? await apiFetch<UserProfile[]>(`/users?email=${encodeURIComponent(email)}`) : [];
+  const byId = await apiFetch<UserProfile[]>(`/users?id=${encodeURIComponent(user.id)}`);
+  const existing = byEmail[0] || byId[0];
   const now = Date.now();
 
-  if (existing[0]?.id) {
-    return apiFetch<UserProfile>(`/users/${existing[0].id}`, {
+  if (existing?.id) {
+    return apiFetch<UserProfile>(`/users/${existing.id}`, {
       method: 'PATCH',
       body: JSON.stringify({
         name: user.name,
-        email: user.email,
+        email,
         picture: user.picture || '',
         updatedAt: now,
       }),
@@ -51,9 +61,9 @@ export async function upsertUserProfile(user: AppUser): Promise<UserProfile> {
   return apiFetch<UserProfile>('/users', {
     method: 'POST',
     body: JSON.stringify({
-      id: user.id,
+      id: user.id || email || `user_${Date.now()}`,
       name: user.name,
-      email: user.email,
+      email,
       picture: user.picture || '',
       createdAt: now,
       updatedAt: now,

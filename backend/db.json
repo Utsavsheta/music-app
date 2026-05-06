@@ -49,7 +49,30 @@
       "picture": "https://lh3.googleusercontent.com/a/ACg8ocLZFEEIV2PohSWcvK8y4Ou9UIymTg_4hDvFZ9jpHJw94Avm9w=s96-c",
       "createdAt": 1778063794433,
       "updatedAt": 1778063794433
+    },
+    {
+      "id": "nkuOlDL0MUk",
+      "name": "Utsav Sheta",
+      "email": "utsavsheta5115@gmail.com",
+      "picture": "https://lh3.googleusercontent.com/a/ACg8ocJKDIT3JJtR-ErEfqf5_dxN3YbR7ChxK5WKWl2ZjHIsG-aYiOaTYA=s96-c",
+      "createdAt": 1778064203780,
+      "updatedAt": 1778064203780
+    },
+    {
+      "id": "A30UZkVYaTI",
+      "name": "Utsav Sheta",
+      "email": "utsav.disolutions@gmail.com",
+      "picture": "https://lh3.googleusercontent.com/a/ACg8ocLZFEEIV2PohSWcvK8y4Ou9UIymTg_4hDvFZ9jpHJw94Avm9w=s96-c",
+      "createdAt": 1778064242280,
+      "updatedAt": 1778064242280
+    },
+    {
+      "id": "Qbx-Mv78QfQ",
+      "name": "Utsav Sheta",
+      "email": "utsav.disolutions@gmail.com",
+      "picture": "https://lh3.googleusercontent.com/a/ACg8ocLZFEEIV2PohSWcvK8y4Ou9UIymTg_4hDvFZ9jpHJw94Avm9w=s96-c",
+      "createdAt": 1778064280509,
+      "updatedAt": 1778064280509
     }
-  ],
-  "$schema": "./node_modules/json-server/schema.json"
+  ]
 }

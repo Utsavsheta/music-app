@@ -87,10 +87,11 @@ export function useGoogleAuth() {
             });
             if (!profileRes.ok) throw new Error('Failed to fetch profile');
             const profile = await profileRes.json();
+            const normalizedEmail = String(profile.email || '').trim().toLowerCase();
             const nextUser: AppUser = {
-              id: profile.sub || profile.email || String(Date.now()),
+              id: normalizedEmail || profile.sub || String(Date.now()),
               name: profile.name || 'User',
-              email: profile.email || '',
+              email: normalizedEmail,
               picture: profile.picture || '',
             };
             const dbUser = await upsertUserProfile(nextUser);
