@@ -86,15 +86,19 @@ export async function fetchLikedSongs(userId: string): Promise<YTVideo[]> {
 
 export async function toggleLike(userId: string, video: YTVideo): Promise<YTVideo[]> {
   if (!userId) return [];
-  const likes = await apiFetch<UserLike[]>(`/likes?userId=${encodeURIComponent(userId)}&video.videoId=${encodeURIComponent(video.videoId)}`);
-  const existing = likes[0];
+  let existing: UserLike | null = null;
+  try {
+    existing = await apiFetch<UserLike>(`/likes/check?userId=${encodeURIComponent(userId)}&videoId=${encodeURIComponent(video.videoId)}`);
+  } catch {
+    existing = null;
+  }
 
   if (existing?.id) {
     await apiFetch(`/likes/${existing.id}`, { method: 'DELETE' });
   } else {
     await apiFetch('/likes', {
       method: 'POST',
-      body: JSON.stringify({ userId, video }),
+      body: JSON.stringify({ userId, video, createdAt: Date.now() }),
     });
   }
   return fetchLikedSongs(userId);
