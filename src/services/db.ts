@@ -1,102 +1,155 @@
-import type { YTVideo } from '../types';
+import type { AppUser, YTVideo } from '../types';
 
 export interface UserPlaylist {
   id: string;
   name: string;
+  visibility: 'public' | 'private';
+  userId: string;
   songs: YTVideo[];
   createdAt: number;
 }
 
-interface AppData {
-  likedSongs: YTVideo[];
-  playlists: UserPlaylist[];
+interface UserLike {
+  id: string;
+  userId: string;
+  video: YTVideo;
 }
 
-const DB_KEY = 'yt_music_player_v2';
+export interface UserProfile extends AppUser {
+  createdAt: number;
+  updatedAt: number;
+}
 
-// Helper to get all data
-function getData(): AppData {
-  try {
-    const raw = localStorage.getItem(DB_KEY);
-    if (!raw) return { likedSongs: [], playlists: [] };
-    const parsed = JSON.parse(raw);
-    return {
-      likedSongs: Array.isArray(parsed.likedSongs) ? parsed.likedSongs : [],
-      playlists: Array.isArray(parsed.playlists) ? parsed.playlists.map((p: any) => ({
-        ...p,
-        songs: Array.isArray(p.songs) ? p.songs : []
-      })) : []
-    };
-  } catch {
-    return { likedSongs: [], playlists: [] };
+const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...init,
+  });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+/* ─── Users ─── */
+export async function upsertUserProfile(user: AppUser): Promise<UserProfile> {
+  const existing = await apiFetch<UserProfile[]>(`/users?id=${encodeURIComponent(user.id)}`);
+  const now = Date.now();
+
+  if (existing[0]?.id) {
+    return apiFetch<UserProfile>(`/users/${existing[0].id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: user.name,
+        email: user.email,
+        picture: user.picture || '',
+        updatedAt: now,
+      }),
+    });
   }
+
+  return apiFetch<UserProfile>('/users', {
+    method: 'POST',
+    body: JSON.stringify({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      picture: user.picture || '',
+      createdAt: now,
+      updatedAt: now,
+    }),
+  });
 }
 
-// Helper to save all data
-function saveData(data: AppData) {
-  localStorage.setItem(DB_KEY, JSON.stringify(data));
+export async function fetchUserProfile(userId: string): Promise<UserProfile | null> {
+  if (!userId) return null;
+  const users = await apiFetch<UserProfile[]>(`/users?id=${encodeURIComponent(userId)}`);
+  return users[0] || null;
 }
 
 /* ─── Liked Songs ─── */
-export async function fetchLikedSongs(): Promise<YTVideo[]> {
-  return getData().likedSongs;
+export async function fetchLikedSongs(userId: string): Promise<YTVideo[]> {
+  if (!userId) return [];
+  const likes = await apiFetch<UserLike[]>(`/likes?userId=${encodeURIComponent(userId)}`);
+  return likes.map((l) => l.video);
 }
 
-export async function toggleLike(video: YTVideo): Promise<YTVideo[]> {
-  const data = getData();
-  const index = data.likedSongs.findIndex(s => s.videoId === video.videoId);
-  
-  if (index >= 0) {
-    data.likedSongs.splice(index, 1);
+export async function toggleLike(userId: string, video: YTVideo): Promise<YTVideo[]> {
+  if (!userId) return [];
+  const likes = await apiFetch<UserLike[]>(`/likes?userId=${encodeURIComponent(userId)}&video.videoId=${encodeURIComponent(video.videoId)}`);
+  const existing = likes[0];
+
+  if (existing?.id) {
+    await apiFetch(`/likes/${existing.id}`, { method: 'DELETE' });
   } else {
-    data.likedSongs.unshift(video);
+    await apiFetch('/likes', {
+      method: 'POST',
+      body: JSON.stringify({ userId, video }),
+    });
   }
-  
-  saveData(data);
-  return data.likedSongs;
+  return fetchLikedSongs(userId);
 }
 
 /* ─── Playlists ─── */
-export async function fetchPlaylists(): Promise<UserPlaylist[]> {
-  return getData().playlists;
+export async function fetchPlaylists(userId: string): Promise<UserPlaylist[]> {
+  if (!userId) return [];
+  return apiFetch<UserPlaylist[]>(`/playlists?userId=${encodeURIComponent(userId)}`);
 }
 
-export async function createPlaylist(name: string): Promise<UserPlaylist> {
-  const data = getData();
+export async function fetchPublicPlaylists(): Promise<UserPlaylist[]> {
+  return apiFetch<UserPlaylist[]>('/playlists?visibility=public');
+}
+
+export async function createPlaylist(userId: string, name: string, visibility: 'public' | 'private' = 'private'): Promise<UserPlaylist> {
   const newPl: UserPlaylist = {
-    id: 'pl_' + Date.now(),
+    id: `pl_${Date.now()}`,
+    userId,
     name,
+    visibility,
     songs: [],
-    createdAt: Date.now()
+    createdAt: Date.now(),
   };
-  data.playlists.push(newPl);
-  saveData(data);
-  return newPl;
+  return apiFetch<UserPlaylist>('/playlists', { method: 'POST', body: JSON.stringify(newPl) });
 }
 
-export async function deletePlaylist(id: string): Promise<UserPlaylist[]> {
-  const data = getData();
-  data.playlists = data.playlists.filter(p => p.id !== id);
-  saveData(data);
-  return data.playlists;
+export async function updatePlaylist(userId: string, id: string, updates: Partial<Pick<UserPlaylist, 'name' | 'visibility'>>): Promise<UserPlaylist[]> {
+  const existing = await apiFetch<UserPlaylist>(`/playlists/${id}`);
+  if (existing.userId !== userId) return fetchPlaylists(userId);
+  await apiFetch(`/playlists/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({
+      name: updates.name?.trim() ? updates.name.trim() : existing.name,
+      visibility: updates.visibility || existing.visibility || 'private',
+    }),
+  });
+  return fetchPlaylists(userId);
 }
 
-export async function addSongToPlaylist(playlistId: string, video: YTVideo): Promise<UserPlaylist[]> {
-  const data = getData();
-  const pl = data.playlists.find(p => p.id === playlistId);
-  if (pl && !pl.songs.some(s => s.videoId === video.videoId)) {
-    pl.songs.push(video);
-    saveData(data);
+export async function deletePlaylist(userId: string, id: string): Promise<UserPlaylist[]> {
+  const existing = await apiFetch<UserPlaylist>(`/playlists/${id}`);
+  if (existing.userId !== userId) return fetchPlaylists(userId);
+  await apiFetch(`/playlists/${id}`, { method: 'DELETE' });
+  return fetchPlaylists(userId);
+}
+
+export async function addSongToPlaylist(userId: string, playlistId: string, video: YTVideo): Promise<UserPlaylist[]> {
+  const pl = await apiFetch<UserPlaylist>(`/playlists/${playlistId}`);
+  if (pl.userId !== userId) return fetchPlaylists(userId);
+  if (!pl.songs.some((s) => s.videoId === video.videoId)) {
+    await apiFetch(`/playlists/${playlistId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ songs: [...pl.songs, video] }),
+    });
   }
-  return data.playlists;
+  return fetchPlaylists(userId);
 }
 
-export async function removeSongFromPlaylist(playlistId: string, videoId: string): Promise<UserPlaylist[]> {
-  const data = getData();
-  const pl = data.playlists.find(p => p.id === playlistId);
-  if (pl) {
-    pl.songs = pl.songs.filter(s => s.videoId !== videoId);
-    saveData(data);
-  }
-  return data.playlists;
+export async function removeSongFromPlaylist(userId: string, playlistId: string, videoId: string): Promise<UserPlaylist[]> {
+  const pl = await apiFetch<UserPlaylist>(`/playlists/${playlistId}`);
+  if (pl.userId !== userId) return fetchPlaylists(userId);
+  await apiFetch(`/playlists/${playlistId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ songs: pl.songs.filter((s) => s.videoId !== videoId) }),
+  });
+  return fetchPlaylists(userId);
 }

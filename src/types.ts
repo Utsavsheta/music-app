@@ -23,3 +23,10 @@ export interface YTPlaylist {
 export type RepeatMode = 'off' | 'all' | 'one';
 
 export type ViewMode = 'home' | 'search' | 'playlist';
+
+export interface AppUser {
+  id: string;
+  name: string;
+  email: string;
+  picture?: string;
+}

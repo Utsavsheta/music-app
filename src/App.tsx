@@ -2,23 +2,24 @@ import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react'
 import type { YTVideo, YTPlaylist, RepeatMode, ViewMode } from './types';
 import { searchVideos, searchPlaylists, fetchPlaylistItems, fetchTrendingMusic, fetchPopularPlaylists } from './api/youtube';
 import { useYouTubePlayer } from './hooks/useYouTubePlayer';
+import { useGoogleAuth } from './hooks/useGoogleAuth';
 import * as DB from './services/db';
- 
+
 /* ── Helpers ── */
 function fmtTime(s: number) {
   if (!isFinite(s) || s < 0 || s > 360000) return '0:00';
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
 }
- 
+
 const GR = ['linear-gradient(135deg,#667eea,#764ba2)', 'linear-gradient(135deg,#ff0844,#ffb199)', 'linear-gradient(135deg,#f093fb,#f5576c)', 'linear-gradient(135deg,#4facfe,#00f2fe)', 'linear-gradient(135deg,#fa709a,#fee140)', 'linear-gradient(135deg,#a18cd1,#fbc2eb)', 'linear-gradient(135deg,#43e97b,#38f9d7)', 'linear-gradient(135deg,#f857a6,#ff5858)', 'linear-gradient(135deg,#ffecd2,#fcb69f)', 'linear-gradient(135deg,#a1c4fd,#c2e9fb)'];
- 
+
 function grad(id: string) {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = id.charCodeAt(i) + ((h << 5) - h);
   return GR[Math.abs(h) % GR.length];
 }
- 
+
 /* ── UI Elements ── */
 function Spin() {
   return (
@@ -41,17 +42,17 @@ function SongCardLoader({ count = 8 }: { count?: number }) {
     </div>
   );
 }
- 
+
 function Hart({ on, sz = 18 }: { on: boolean; sz?: number }) {
   return (
     <svg width={sz} height={sz} viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill={on ? '#ef4444' : 'none'} stroke={on ? '#ef4444' : 'currentColor'} strokeWidth="2.5" /></svg>
   );
 }
- 
+
 function SBtn({ on, click, ico, label }: { on: boolean; click: () => void; ico: ReactNode; label: string }) {
   return <button onClick={click} className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-bold transition ${on ? 'bg-white/10 text-white shadow-lg' : 'text-white/40 hover:text-white hover:bg-white/5'}`}><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">{ico}</svg>{label}</button>;
 }
- 
+
 export default function App() {
   const [queue, setQueue] = useState<YTVideo[]>([]);
   const [idx, setIdx] = useState(-1);
@@ -63,12 +64,19 @@ export default function App() {
   const [rep, setRep] = useState<RepeatMode>('off');
   const [likedSongs, setLikedSongs] = useState<YTVideo[]>([]);
   const [userPls, setUserPls] = useState<DB.UserPlaylist[]>([]);
+  const [publicPls, setPublicPls] = useState<DB.UserPlaylist[]>([]);
   const [view, setView] = useState<ViewMode>('home');
   const [query, setQuery] = useState('');
   const [stab, setStab] = useState<'v' | 'p'>('v');
   const [collapsed, setCollapsed] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newVisibility, setNewVisibility] = useState<'public' | 'private'>('private');
+  const [editPl, setEditPl] = useState<DB.UserPlaylist | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editVisibility, setEditVisibility] = useState<'public' | 'private'>('private');
   const [showLiked, setShowLiked] = useState(false);
   const [a2pTarget, setA2pTarget] = useState<YTVideo | null>(null);
   const [viewUPL, setViewUPL] = useState<DB.UserPlaylist | null>(null);
@@ -87,7 +95,9 @@ export default function App() {
   const [loadPl, setLoadPl] = useState(false);
   const [toasts, setToasts] = useState<{ id: number; msg: string }[]>([]);
   const [completedTracks, setCompletedTracks] = useState<string[]>([]);
- 
+  const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
+  const { user, login, logout, authReady, authError } = useGoogleAuth();
+
   const stateRef = useRef({ queue, idx, rep, shuf });
   const volRef = useRef(vol);
   const currentTrackIdRef = useRef<string | null>(null);
@@ -111,24 +121,37 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('completed_tracks', JSON.stringify(completedTracks.slice(-1000)));
   }, [completedTracks]);
- 
+
   const currentTrack = idx >= 0 && idx < queue.length ? queue[idx] : null;
   const currentTrackId = currentTrack?.videoId;
   const likedSet = new Set(likedSongs.map(s => s.videoId));
   const seekPct = dur > 0 ? Math.min(100, Math.max(0, (time / dur) * 100)) : 0;
   const volPct = Math.min(100, Math.max(0, vol));
+  const visiblePublicPls = publicPls.filter((p) => p.userId !== user?.id);
   const completedSet = new Set(completedTracks);
   const markCompleted = useCallback((videoId: string | null | undefined) => {
     if (!videoId) return;
     setCompletedTracks((prev) => (prev.includes(videoId) ? prev : [...prev, videoId]));
   }, []);
- 
+
   const toast = (msg: string) => {
     const id = Date.now() + Math.random();
     setToasts(p => [...p.slice(-2), { id, msg }]);
     setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 2500);
   };
- 
+  const lastAuthErrRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!authError || authError === lastAuthErrRef.current) return;
+    lastAuthErrRef.current = authError;
+    toast(authError);
+  }, [authError]);
+  useEffect(() => {
+    setAvatarLoadFailed(false);
+  }, [user?.picture]);
+  useEffect(() => {
+    setShowProfileMenu(false);
+  }, [user?.id]);
+
   const goNext = useCallback((auto: boolean) => {
     const { queue: q, idx: ci, rep: r, shuf: s } = stateRef.current;
     if (!q.length) return;
@@ -142,7 +165,7 @@ export default function App() {
     player.play();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
- 
+
   const onState = useCallback((state: number) => {
     if (state === 0) {
       markCompleted(currentTrackIdRef.current);
@@ -158,12 +181,12 @@ export default function App() {
     else if (state === 2) setPlaying(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [goNext, markCompleted]);
- 
+
   const player = useYouTubePlayer('yt-player-hidden', onState, (code) => {
     toast(`Playback error (${code})`);
     (goNext as any)(false);
   });
- 
+
   const goPrev = useCallback(() => {
     if (!queue.length) return;
     if (player.getCurrentTime() > 5) { player.seekTo(0); return; }
@@ -174,22 +197,27 @@ export default function App() {
     player.setVolume(vol);
     player.play();
   }, [player, queue, idx, vol]);
- 
+
   useEffect(() => {
     if (!player.isReady) return;
     if (vol <= 0) player.mute();
     else player.unMute();
     player.setVolume(vol);
   }, [player, vol]);
- 
+
   useEffect(() => {
     async function init() {
-      const [l, p] = await Promise.all([DB.fetchLikedSongs(), DB.fetchPlaylists()]);
-      setLikedSongs(l); setUserPls(p);
       setLoading(true);
       try {
-        const [t, pl] = await Promise.all([fetchTrendingMusic(12), fetchPopularPlaylists()]);
-        setTrending(t.videos); setTkTrend(t.nextPageToken); setPopPls(pl);
+        const [t, pl, pub] = await Promise.all([
+          fetchTrendingMusic(12),
+          fetchPopularPlaylists(),
+          DB.fetchPublicPlaylists(),
+        ]);
+        setTrending(t.videos);
+        setTkTrend(t.nextPageToken);
+        setPopPls(pl);
+        setPublicPls(pub);
       } catch (err: any) {
         if (err.message === 'ADD_MORE_TOKENS') toast('Error: Add more API key tokens');
         else toast('Load failed');
@@ -199,7 +227,24 @@ export default function App() {
     init();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
- 
+
+  useEffect(() => {
+    async function loadUserData() {
+      if (!user?.id) {
+        setLikedSongs([]);
+        setUserPls([]);
+        return;
+      }
+      const [likes, ownPlaylists] = await Promise.all([
+        DB.fetchLikedSongs(user.id),
+        DB.fetchPlaylists(user.id),
+      ]);
+      setLikedSongs(likes);
+      setUserPls(ownPlaylists);
+    }
+    loadUserData();
+  }, [user?.id]);
+
   const fetchMore = async () => {
     if (loadMore) return;
     setLoadMore(true);
@@ -218,36 +263,66 @@ export default function App() {
     }
     setLoadMore(false);
   };
- 
+
   useEffect(() => {
     const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting && !loadMore && !loading) fetchMore(); }, { threshold: 0.1 });
     const sent = document.getElementById('sentinel');
     if (sent) obs.observe(sent);
     return () => obs.disconnect();
   });
- 
+
   const handleLike = async (v: YTVideo) => {
-    const up = await DB.toggleLike(v); setLikedSongs(up); toast(up.some(s => s.videoId === v.videoId) ? 'Liked ❤️' : 'Removed');
+    if (!user?.id) {
+      toast('Login required to like songs');
+      return;
+    }
+    const up = await DB.toggleLike(user.id, v); setLikedSongs(up); toast(up.some(s => s.videoId === v.videoId) ? 'Liked ❤️' : 'Removed');
   };
   const handleCreatePl = async () => {
+    if (!user?.id) {
+      toast('Login required to create playlists');
+      return;
+    }
     if (!newName.trim()) return;
-    await DB.createPlaylist(newName.trim()); setUserPls(await DB.fetchPlaylists());
-    setNewName(''); setShowCreate(false); toast('Created');
+    await DB.createPlaylist(user.id, newName.trim(), newVisibility); setUserPls(await DB.fetchPlaylists(user.id));
+    setPublicPls(await DB.fetchPublicPlaylists());
+    setNewName(''); setNewVisibility('private'); setShowCreate(false); toast('Created');
+  };
+  const openEditPl = (pl: DB.UserPlaylist) => {
+    setEditPl(pl);
+    setEditName(pl.name);
+    setEditVisibility(pl.visibility);
+  };
+  const handleEditPl = async () => {
+    if (!user?.id || !editPl || !editName.trim()) return;
+    const updated = await DB.updatePlaylist(user.id, editPl.id, { name: editName.trim(), visibility: editVisibility });
+    setUserPls(updated);
+    setPublicPls(await DB.fetchPublicPlaylists());
+    if (viewUPL?.id === editPl.id) {
+      setViewUPL(updated.find((p) => p.id === editPl.id) || null);
+    }
+    setEditPl(null);
+    toast('Playlist updated');
   };
   const handleAddToPl = async (plId: string, v: YTVideo) => {
-    const up = await DB.addSongToPlaylist(plId, v);
+    if (!user?.id) {
+      toast('Login required to add songs');
+      return;
+    }
+    const up = await DB.addSongToPlaylist(user.id, plId, v);
     setUserPls(up); setA2pTarget(null); toast('Added');
     if (viewUPL?.id === plId) setViewUPL(up.find(p => p.id === plId) || null);
   };
   const handleRemoveFromPl = async (plId: string, vId: string) => {
-    const up = await DB.removeSongFromPlaylist(plId, vId);
+    if (!user?.id) return;
+    const up = await DB.removeSongFromPlaylist(user.id, plId, vId);
     setUserPls(up); if (viewUPL?.id === plId) setViewUPL(up.find(p => p.id === plId) || null);
   };
- 
+
   const navHome = () => { setView('home'); setShowLiked(false); setYtPl(null); setViewUPL(null); setQuery(''); };
   const navLiked = () => { setShowLiked(true); setView('playlist'); setYtPl(null); setViewUPL(null); };
   const navUPL = (pl: DB.UserPlaylist) => { setViewUPL(pl); setView('playlist'); setYtPl(null); setShowLiked(false); };
- 
+
   const doSearch = (q: string) => {
     setQuery(q); setView('search'); setLoading(true);
     setTimeout(async () => {
@@ -256,7 +331,7 @@ export default function App() {
       setLoading(false);
     }, 500);
   };
- 
+
   const playSongFromList = useCallback((list: YTVideo[], startIndex: number) => {
     if (!player.isReady || !list.length || startIndex < 0 || startIndex >= list.length) return;
     setQueue(list);
@@ -270,7 +345,7 @@ export default function App() {
     player.setVolume(vol);
     player.play();
   }, [player, vol]);
- 
+
   const playAll = (vids: YTVideo[], start = 0) => {
     if (!player.isReady || !vids.length) return;
     setQueue(vids); setIdx(start); setTime(0); setDur(vids[start]?.duration || 0);
@@ -280,7 +355,7 @@ export default function App() {
     player.play();
     toast(`Playing ${vids.length} tracks`);
   };
- 
+
   const togglePlayback = useCallback(() => {
     if (!player.isReady || !currentTrack) return;
     const state = player.getPlayerState();
@@ -296,7 +371,7 @@ export default function App() {
     player.play();
     setPlaying(true);
   }, [currentTrack, player, vol]);
- 
+
   useEffect(() => {
     if (!player.isReady || !playing || !currentTrack) return;
     const id = setInterval(() => {
@@ -304,7 +379,25 @@ export default function App() {
     }, 300);
     return () => clearInterval(id);
   }, [currentTrack, player, player.isReady, playing]);
- 
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowUp') setVol((v) => Math.min(100, v + 5));
+      if (e.key === 'ArrowDown') setVol((v) => Math.max(0, v - 5));
+      if (e.key.toLowerCase() === 'm') setVol((v) => (v > 0 ? 0 : 70));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.setActionHandler('play', () => player.play());
+    navigator.mediaSession.setActionHandler('pause', () => player.pause());
+    navigator.mediaSession.setActionHandler('previoustrack', () => goPrev());
+    navigator.mediaSession.setActionHandler('nexttrack', () => (goNext as any)(false));
+  }, [goNext, goPrev, player]);
+
   const openYTPl = async (pl: YTPlaylist) => {
     setYtPl(pl); setView('playlist'); setShowLiked(false); setViewUPL(null); setLoadPl(true);
     try {
@@ -313,11 +406,35 @@ export default function App() {
     } catch { toast('Fail'); }
     setLoadPl(false);
   };
- 
+
   const curPlSongs = showLiked ? likedSongs : viewUPL ? (viewUPL.songs || []) : plVids;
   const curPlTitle = showLiked ? 'Liked Songs' : viewUPL ? viewUPL.name : ytPl?.title || '';
   const curPlGrad = showLiked ? '#e74' : grad(viewUPL?.id || ytPl?.id || 'x');
- 
+  const currentTrackUrl = currentTrack ? `https://www.youtube.com/watch?v=${currentTrack.videoId}` : '';
+
+  const handleCast = useCallback(async () => {
+    if (!currentTrack || !currentTrackUrl) return;
+    try {
+      if (navigator.share) {
+        await navigator.share({
+          title: currentTrack.title,
+          text: `Listen on Music: ${currentTrack.title}`,
+          url: currentTrackUrl,
+        });
+        toast('Sent to cast/share target');
+        return;
+      }
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(currentTrackUrl);
+        toast('Link copied. Open on your cast device.');
+        return;
+      }
+      window.open(currentTrackUrl, '_blank', 'noopener,noreferrer');
+    } catch {
+      toast('Cast cancelled or unavailable');
+    }
+  }, [currentTrack, currentTrackUrl]);
+
   return (
     <div className="flex h-screen bg-[#121212] text-white font-sans select-none overflow-hidden relative">
       <aside className={`${collapsed ? 'w-[72px]' : 'w-[280px]'} bg-black flex flex-col transition-all border-r border-white/5`}>
@@ -329,15 +446,74 @@ export default function App() {
         </nav>
         {!collapsed && (
           <div className="mt-6 flex-1 flex flex-col border-t border-white/5 overflow-hidden">
-            <div className="px-5 py-3 flex items-center justify-between"><span className="text-xs font-bold text-white/40 uppercase tracking-widest">Playlists</span><button onClick={() => setShowCreate(true)} className="text-white/40 hover:text-white text-xl leading-none">+</button></div>
-            <div className="flex-1 overflow-y-auto cscr px-2 pb-4 space-y-0.5">{userPls.map(p => (<div key={p.id} className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition ${viewUPL?.id === p.id ? 'bg-white/10 text-white shadow-sm' : 'text-white/60 hover:bg-white/5'}`}><button onClick={() => navUPL(p)} className="flex-1 text-left text-sm truncate">♪ {p.name}</button><button onClick={(e) => { e.stopPropagation(); DB.deletePlaylist(p.id).then(u => setUserPls(u)); if (viewUPL?.id === p.id) navHome(); }} className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-500 transition text-xs">✕</button></div>))}</div>
+            <div className="px-5 py-3 flex items-center justify-between"><span className="text-xs font-bold text-white/40 uppercase tracking-widest">Playlists</span><button onClick={() => user ? setShowCreate(true) : toast('Login required to create playlist')} className="text-white/40 hover:text-white text-xl leading-none">+</button></div>
+            <div className="flex-1 overflow-y-auto cscr px-2 pb-4 space-y-0.5">
+              {userPls.map((p) => (
+                <div key={p.id} className={`group flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition ${viewUPL?.id === p.id ? 'bg-white/10 text-white shadow-sm' : 'text-white/60 hover:bg-white/5'}`}>
+                  <button onClick={() => navUPL(p)} className="flex-1 text-left text-sm truncate">♪ {p.name} <span className="opacity-40 text-[10px]">({p.visibility})</span></button>
+                  <button onClick={(e) => { e.stopPropagation(); openEditPl(p); }} className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-white transition text-xs">✎</button>
+                  <button
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      if (!user?.id) return;
+                      const next = await DB.deletePlaylist(user.id, p.id);
+                      setUserPls(next);
+                      setPublicPls(await DB.fetchPublicPlaylists());
+                      if (viewUPL?.id === p.id) navHome();
+                    }}
+                    className="opacity-0 group-hover:opacity-100 text-white/20 hover:text-red-500 transition text-xs"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+              {!!visiblePublicPls.length && <div className="pt-3 px-3 text-[10px] uppercase tracking-widest text-white/30 font-bold">Public playlists</div>}
+              {visiblePublicPls.map((p) => (
+                <button key={`pub-${p.id}`} onClick={() => navUPL(p)} className="w-full text-left px-3 py-2 rounded-lg text-sm text-white/50 hover:text-white hover:bg-white/5 transition truncate">
+                  🌍 {p.name}
+                </button>
+              ))}
+            </div>
           </div>
         )}
         <button onClick={() => setCollapsed(s => !s)} className="p-4 text-xs text-white/30 hover:text-white/60 text-center">{collapsed ? '→' : '← Collapse'}</button>
       </aside>
- 
+
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="flex items-center gap-4 px-6 py-3 bg-black/40 backdrop-blur-md border-b border-white/5 flex-shrink-0 z-10"><div className="flex-1 max-w-xl relative"><input type="text" placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { (e.target as any).blur(); doSearch((e.target as any).value); } }} className="w-full bg-white/5 hover:bg-white/10 focus:bg-white/15 text-white rounded-full px-5 py-2 text-sm outline-none transition border border-transparent focus:border-white/10" /></div>{player.isReady ? <span className="text-[10px] font-bold text-green-500 bg-green-500/10 px-2 py-1 rounded">READY</span> : <Spin />}</header>
+        <header className="flex items-center gap-4 px-6 py-3 bg-black/40 backdrop-blur-md border-b border-white/5 flex-shrink-0 z-10">
+          <div className="flex-1 max-w-xl relative">
+            <input type="text" placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { (e.target as any).blur(); doSearch((e.target as any).value); } }} className="w-full bg-white/5 hover:bg-white/10 focus:bg-white/15 text-white rounded-full px-5 py-2 text-sm outline-none transition border border-transparent focus:border-white/10" />
+          </div>
+          <div className="ml-auto flex items-center gap-3">
+            {user ? (
+              <div className="relative">
+                <button onClick={() => setShowProfileMenu((s) => !s)} className="w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 border border-white/10 flex items-center justify-center overflow-hidden">
+                  {user.picture && !avatarLoadFailed ? (
+                    <img
+                      src={user.picture}
+                      alt={user.name}
+                      referrerPolicy="no-referrer"
+                      onError={() => setAvatarLoadFailed(true)}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span className="w-full h-full bg-white/20 text-xs font-bold flex items-center justify-center">
+                      {user.name?.trim()?.charAt(0)?.toUpperCase() || 'U'}
+                    </span>
+                  )}
+                </button>
+                {showProfileMenu && (
+                  <div className="absolute right-0 mt-2 w-44 rounded-xl bg-[#1f1f1f] border border-white/10 shadow-2xl overflow-hidden z-20">
+                    <div className="px-3 py-2 text-xs text-white/60 truncate">{user.name}</div>
+                    <button onClick={() => { setShowProfileMenu(false); setShowLogoutConfirm(true); }} className="w-full text-left px-3 py-2 text-sm hover:bg-white/10">Logout</button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <button onClick={login} disabled={!authReady} title={authError || ''} className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold disabled:opacity-50 disabled:cursor-not-allowed">{authReady ? 'Login with Google' : 'Loading login...'}</button>
+            )}
+          </div>
+        </header>
         <main className="flex-1 overflow-y-auto cscr pb-32">
           {view === 'home' && !showLiked && !viewUPL && (<div className="p-6"><h1 className="text-3xl font-black mb-8 italic uppercase tracking-tighter">Home</h1>{loading && !trending.length && <SongCardLoader count={12} />}<section className="mb-12"><h2 className="text-xl font-bold mb-4 flex justify-between">Trending <button onClick={() => { if (trending.length) playAll(trending); }} className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold uppercase tracking-widest">Play All</button></h2><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">{trending.map((v, i) => (<div key={v.videoId} className={`group bg-white/5 p-3 rounded-2xl hover:bg-white/10 transition cursor-pointer animate-card-in ${completedSet.has(v.videoId) ? 'ring-1 ring-emerald-400/40' : ''}`} onClick={() => playSongFromList(trending, i)}><div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-lg">{v.thumbnail ? <img src={v.thumbnailHigh || v.thumbnail} className="w-full h-full object-cover group-hover:scale-110 transition duration-500" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}<div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition flex items-center justify-center"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transform translate-y-4 group-hover:translate-y-0 transition shadow-xl">{playing && currentTrackId === v.videoId ? <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg> : <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>}</div></div><span className="absolute bottom-2 right-2 bg-black/80 text-[10px] font-black px-1.5 py-0.5 rounded-md">{v.durationFormatted}</span>{completedSet.has(v.videoId) && <span className="absolute top-2 left-2 bg-emerald-500/90 text-[9px] font-black px-2 py-0.5 rounded-full uppercase tracking-wider">Played</span>}</div><div className="min-w-0 relative"><h3 className="text-sm font-bold truncate pr-6 mb-1">{v.title}</h3><p className="text-xs text-white/40 truncate">{v.channelTitle}</p><div className="absolute top-0 right-0 opacity-0 group-hover:opacity-100 flex flex-col gap-2 transition"><button onClick={e => { e.stopPropagation(); handleLike(v); }} className="text-white hover:text-red-500"><Hart on={likedSet.has(v.videoId)} sz={16} /></button><button onClick={e => { e.stopPropagation(); setA2pTarget(v); }} className="text-white/40 hover:text-white"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z" /></svg></button></div></div></div>))}</div></section><section><h2 className="text-xl font-bold mb-4">Popular Playlists</h2><div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{popPls.map(p => (<div key={p.id} className="group bg-white/5 p-4 rounded-2xl hover:bg-white/10 transition cursor-pointer animate-card-in" onClick={() => openYTPl(p)}><div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-xl">{p.thumbnail ? <img src={p.thumbnailHigh || p.thumbnail} className="w-full h-full object-cover group-hover:scale-105 transition duration-700" alt="" /> : <div className="w-full h-full" style={{ background: grad(p.id) }} />}<div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 flex items-center justify-center transition"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-xl"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div></div><div className="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{p.itemCount} SONGS</div></div><h3 className="text-sm font-bold truncate mb-1 uppercase tracking-tighter italic">{p.title}</h3><p className="text-[10px] font-black text-white/30 tracking-widest uppercase truncate">{p.channelTitle}</p></div>))}</div></section></div>)}
           {view === 'search' && (<div className="p-6"><div className="flex gap-4 mb-8"><button onClick={() => setStab('v')} className={`px-6 py-2 rounded-full text-xs font-black transition ${stab === 'v' ? 'bg-white text-black' : 'bg-white/5 text-white/40'}`}>Songs</button><button onClick={() => setStab('p')} className={`px-6 py-2 rounded-full text-xs font-black transition ${stab === 'p' ? 'bg-white text-black' : 'bg-white/5 text-white/40'}`}>Playlists</button></div>{loading ? <Spin /> : stab === 'v' ? (<div className="space-y-1">{srVids.map((v, i) => (<div key={v.videoId + i} onClick={() => playSongFromList(srVids, i)} className={`grid grid-cols-[40px_1fr_1fr_140px] gap-4 items-center px-4 py-3 rounded-xl cursor-pointer group transition duration-200 ${currentTrackId === v.videoId ? 'bg-white/10 shadow-md border border-white/5' : 'hover:bg-white/5 border border-transparent'}`}><div className="flex items-center justify-center">{currentTrackId === v.videoId && playing ? <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin" /> : <span className="text-xs font-black text-white/20 group-hover:hidden">{i + 1}</span>}<svg className="hidden group-hover:block" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div><div className="flex items-center gap-4 min-w-0"><div className="w-10 h-10 rounded-lg overflow-hidden flex-shrink-0 shadow-md">{v.thumbnail ? <img src={v.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}</div><div className="min-w-0"><div className={`text-sm font-bold truncate ${currentTrackId === v.videoId ? 'text-red-400' : 'text-white'}`}>{v.title}</div><div className="text-[10px] font-bold text-white/30 tracking-wider uppercase truncate">{v.channelTitle}</div></div></div><div className="text-xs font-medium text-white/30 truncate hidden md:block">{v.channelTitle}</div><div className="flex items-center justify-end gap-3" onClick={e => e.stopPropagation()}><button onClick={() => handleLike(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-red-500 transition"><Hart on={likedSet.has(v.videoId)} sz={16} /></button><button onClick={() => setA2pTarget(v)} className="opacity-0 group-hover:opacity-100 text-white/30 hover:text-white transition"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z" /></svg></button><span className="text-[10px] font-mono font-bold text-white/20 w-10 text-right">{v.durationFormatted}</span></div></div>))}</div>) : (<div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">{srPls.map(p => (<div key={p.id} className="group bg-white/5 p-4 rounded-2xl hover:bg-white/10 transition cursor-pointer" onClick={() => openYTPl(p)}><div className="aspect-square relative overflow-hidden rounded-xl mb-4 shadow-xl">{p.thumbnail ? <img src={p.thumbnailHigh || p.thumbnail} className="w-full h-full object-cover group-hover:scale-105 transition duration-700" alt="" /> : <div className="w-full h-full" style={{ background: grad(p.id) }} />}<div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 flex items-center justify-center transition"><div className="w-12 h-12 rounded-full bg-red-600 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-xl"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg></div></div><div className="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded-lg text-[9px] font-black uppercase tracking-widest">{p.itemCount} SONGS</div></div><h3 className="text-sm font-bold truncate mb-1 uppercase tracking-tighter italic">{p.title}</h3><p className="text-[10px] font-black text-white/30 tracking-widest uppercase truncate">{p.channelTitle}</p></div>))}</div>)}</div>)}
@@ -345,7 +521,7 @@ export default function App() {
           <div id="sentinel" className="h-4 w-full" />{loadMore && <Spin />}
         </main>
       </div>
- 
+
       <footer className="fixed bottom-3 left-3 right-3 z-50 pb-safe">
         <div className="glass-player mx-auto max-w-[2000px] rounded-2xl border border-white/15 bg-white/10 px-4 py-3 shadow-2xl backdrop-blur-xl">
           <div className="flex items-center gap-2 w-full text-[10px] font-mono text-white/55 mb-2">
@@ -389,6 +565,7 @@ export default function App() {
               <button onClick={goPrev} className="text-white/80 hover:text-white transition"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z" /></svg></button>
               <button onClick={togglePlayback} disabled={!player.isReady || !currentTrack} className="w-10 h-10 rounded-full bg-white text-black flex items-center justify-center shadow-lg">{playing ? <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 5h4v14H6zM14 5h4v14h-4z" /></svg> : <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>}</button>
               <button onClick={() => (goNext as any)(false)} className="text-white/80 hover:text-white transition"><svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6h2v12h-2z" /></svg></button>
+              <button onClick={handleCast} disabled={!currentTrack} className="text-white/70 hover:text-white transition disabled:opacity-40" title="Cast / Share"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M1 18h2c0-2.76-2.24-5-5-5v2c1.66 0 3 1.34 3 3zm0-4h2c0-4.42-3.58-8-8-8v2c3.31 0 6 2.69 6 6zm0-8v2c4.97 0 9 4.03 9 9h2c0-6.08-4.92-11-11-11zm20-3H3c-1.1 0-2 .9-2 2v6h2V5h18v14h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z" /></svg></button>
               <button onClick={() => setRep(r => r === 'off' ? 'all' : r === 'all' ? 'one' : 'off')} className={`relative ${rep !== 'off' ? 'text-red-500' : 'text-white/40 hover:text-white'}`}><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" /></svg>{rep === 'one' && <span className="absolute -top-1 -right-1 text-[8px] font-bold">1</span>}</button>
             </div>
             <div className="flex items-center justify-end gap-3 w-1/3">
@@ -407,8 +584,57 @@ export default function App() {
           </div>
         </div>
       </footer>
- 
-      {showCreate && (<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowCreate(false)}><div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}><h3 className="text-xl font-bold mb-6 uppercase tracking-widest italic">Create Playlist</h3><input type="text" value={newName} onChange={e => setNewName(e.target.value)} placeholder="Playlist Name" autoFocus onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') handleCreatePl(); }} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-red-500 mb-6 transition" /><div className="flex gap-3"><button onClick={() => setShowCreate(false)} className="flex-1 py-3 rounded-full font-bold hover:bg-white/5 transition text-sm">Cancel</button><button onClick={handleCreatePl} disabled={!newName.trim()} className="flex-1 py-3 rounded-full bg-red-600 font-bold hover:bg-red-700 disabled:opacity-30 transition text-sm shadow-xl">Create</button></div></div></div>)}
+
+      {showCreate && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowCreate(false)}>
+          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-xl font-bold mb-6 uppercase tracking-widest italic">Create Playlist</h3>
+            <input type="text" value={newName} onChange={e => setNewName(e.target.value)} placeholder="Playlist Name" autoFocus onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') handleCreatePl(); }} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-red-500 mb-4 transition" />
+            <div className="mb-6">
+              <p className="text-xs uppercase tracking-widest text-white/50 font-bold">Visibility</p>
+              <div className="mt-2 flex gap-2">
+                <button onClick={() => setNewVisibility('private')} className={`flex-1 py-2 rounded-lg text-xs font-bold ${newVisibility === 'private' ? 'bg-white text-black' : 'bg-white/5 text-white/60'}`}>Private</button>
+                <button onClick={() => setNewVisibility('public')} className={`flex-1 py-2 rounded-lg text-xs font-bold ${newVisibility === 'public' ? 'bg-white text-black' : 'bg-white/5 text-white/60'}`}>Public</button>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setShowCreate(false)} className="flex-1 py-3 rounded-full font-bold hover:bg-white/5 transition text-sm">Cancel</button>
+              <button onClick={handleCreatePl} disabled={!newName.trim()} className="flex-1 py-3 rounded-full bg-red-600 font-bold hover:bg-red-700 disabled:opacity-30 transition text-sm shadow-xl">Create</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {editPl && (
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setEditPl(null)}>
+          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-xl font-bold mb-6 uppercase tracking-widest italic">Edit Playlist</h3>
+            <input type="text" value={editName} onChange={e => setEditName(e.target.value)} placeholder="Playlist Name" className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-red-500 mb-4 transition" />
+            <div className="mb-6">
+              <p className="text-xs uppercase tracking-widest text-white/50 font-bold">Visibility</p>
+              <div className="mt-2 flex gap-2">
+                <button onClick={() => setEditVisibility('private')} className={`flex-1 py-2 rounded-lg text-xs font-bold ${editVisibility === 'private' ? 'bg-white text-black' : 'bg-white/5 text-white/60'}`}>Private</button>
+                <button onClick={() => setEditVisibility('public')} className={`flex-1 py-2 rounded-lg text-xs font-bold ${editVisibility === 'public' ? 'bg-white text-black' : 'bg-white/5 text-white/60'}`}>Public</button>
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button onClick={() => setEditPl(null)} className="flex-1 py-3 rounded-full font-bold hover:bg-white/5 transition text-sm">Cancel</button>
+              <button onClick={handleEditPl} disabled={!editName.trim()} className="flex-1 py-3 rounded-full bg-red-600 font-bold hover:bg-red-700 disabled:opacity-30 transition text-sm shadow-xl">Save</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 z-[102] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowLogoutConfirm(false)}>
+          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
+            <h3 className="text-xl font-bold mb-3 uppercase tracking-widest italic">Confirm Logout</h3>
+            <p className="text-sm text-white/60 mb-6">Are you sure you want to logout from this account?</p>
+            <div className="flex gap-3">
+              <button onClick={() => setShowLogoutConfirm(false)} className="flex-1 py-3 rounded-full font-bold hover:bg-white/5 transition text-sm">Cancel</button>
+              <button onClick={() => { logout(); setShowLogoutConfirm(false); }} className="flex-1 py-3 rounded-full bg-red-600 font-bold hover:bg-red-700 transition text-sm shadow-xl">Logout</button>
+            </div>
+          </div>
+        </div>
+      )}
       {a2pTarget && (<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setA2pTarget(null)}><div className="bg-[#222] rounded-2xl p-6 w-full max-w-sm shadow-2xl flex flex-col max-h-[70vh] border border-white/5" onClick={e => e.stopPropagation()}><h3 className="text-xl font-bold mb-4 uppercase tracking-widest italic">Add to Playlist</h3><button onClick={() => { setA2pTarget(null); setShowCreate(true); }} className="flex items-center gap-3 p-3 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white mb-4 transition"><span className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center text-xl">+</span><span className="text-sm font-bold">New Playlist</span></button><div className="flex-1 overflow-y-auto cscr space-y-1">{userPls.map(p => (<button key={p.id} onClick={() => handleAddToPl(p.id, a2pTarget)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition text-left"><div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold" style={{ background: grad(p.id) }}>♪</div><div className="min-w-0 flex-1"><div className="text-sm font-bold truncate">{p.name}</div><div className="text-xs opacity-50">{p.songs.length} songs</div></div></button>))}</div><button onClick={() => setA2pTarget(null)} className="mt-4 py-3 rounded-xl bg-white/5 font-bold hover:bg-white/10 transition text-sm">Close</button></div></div>)}
       <div className="fixed bottom-24 right-4 flex flex-col gap-2 z-[110] pointer-events-none">{toasts.map(t => <div key={t.id} className="bg-red-600 text-white text-[10px] font-black py-2 px-4 rounded-full shadow-2xl animate-slide-up uppercase tracking-widest">{t.msg}</div>)}</div>
       <div id="yt-player-hidden" className="fixed -left-[9999px] top-0 w-0 h-0 opacity-0 pointer-events-none" />
@@ -416,5 +642,4 @@ export default function App() {
     </div>
   );
 }
- 
- 
+
