@@ -72,6 +72,25 @@ const User = mongoose.models.User || mongoose.model('User', userSchema);
 const Playlist = mongoose.models.Playlist || mongoose.model('Playlist', playlistSchema);
 const Like = mongoose.models.Like || mongoose.model('Like', likeSchema);
 
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'music-app-backend',
+    hasMongoEnv: Boolean(process.env.MONGODB_URI || process.env.mongoURI),
+    dbState: mongoose.connection.readyState,
+  });
+});
+
+app.get('/health/db', async (_req, res) => {
+  try {
+    await connectToDatabase();
+    res.json({ ok: true, dbState: mongoose.connection.readyState });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown DB error';
+    res.status(500).json({ ok: false, message });
+  }
+});
+
 app.use(async (_req, _res, next) => {
   try {
     await connectToDatabase();
@@ -79,10 +98,6 @@ app.use(async (_req, _res, next) => {
   } catch (error) {
     next(error);
   }
-});
-
-app.get('/health', (_req, res) => {
-  res.json({ ok: true });
 });
 
 app.get('/users', async (req, res) => {
@@ -176,7 +191,10 @@ app.delete('/likes/:id', async (req, res) => {
 
 app.use((error, _req, res, _next) => {
   const message = error instanceof Error ? error.message : 'Unknown server error';
-  res.status(500).json({ message });
+  const hint = message.includes('MONGODB_URI')
+    ? 'Set MONGODB_URI in backend Vercel environment variables'
+    : undefined;
+  res.status(500).json({ message, hint });
 });
 
 export default app;
