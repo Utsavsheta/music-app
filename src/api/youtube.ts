@@ -1,16 +1,35 @@
 import type { YTVideo, YTPlaylist } from '../types';
 
-// ARRAY OF API KEYS - Add your extra tokens here
-const API_KEYS = [
-  'AIzaSyBjJ69M6xNfO4zyAtb4tTuK67C0YGSw6oQ',
-  // 'SECOND_KEY_HERE',
-  // 'THIRD_KEY_HERE'
-];
+function parseApiKeys(rawValue: string): string[] {
+  const trimmed = rawValue.trim();
+  if (!trimmed) return [];
+
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((key) => String(key).trim())
+          .filter(Boolean);
+      }
+    } catch {
+      // Fallback to CSV parsing if JSON format is invalid
+    }
+  }
+
+  return trimmed
+    .split(',')
+    .map((key) => key.trim().replace(/^[\s'"[]+|[\s'"\]]+$/g, ''))
+    .filter((key) => Boolean(key) && key !== ';');
+}
+
+const API_KEYS = parseApiKeys(import.meta.env.VITE_YT_API_KEYS || '');
 
 const BASE_URL = 'https://www.googleapis.com/youtube/v3';
 
 // Track the current key index globally (persisted in session)
-let currentKeyIndex = parseInt(localStorage.getItem('yt_api_key_index') || '0');
+let currentKeyIndex = Number.parseInt(localStorage.getItem('yt_api_key_index') || '0', 10);
+if (!Number.isFinite(currentKeyIndex) || currentKeyIndex < 0) currentKeyIndex = 0;
 
 async function fetchYoutube(endpoint: string, params: Record<string, string>): Promise<any> {
   if (currentKeyIndex >= API_KEYS.length) {
@@ -51,9 +70,10 @@ async function fetchYoutube(endpoint: string, params: Record<string, string>): P
 
 // ── Helpers ──
 function parseDuration(iso: string): number {
-  const match = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  const durationRegex = /PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/;
+  const match = durationRegex.exec(iso);
   if (!match) return 0;
-  return parseInt(match[1] || '0') * 3600 + parseInt(match[2] || '0') * 60 + parseInt(match[3] || '0');
+  return Number.parseInt(match[1] || '0', 10) * 3600 + Number.parseInt(match[2] || '0', 10) * 60 + Number.parseInt(match[3] || '0', 10);
 }
 
 function formatDuration(seconds: number): string {

@@ -33,11 +33,14 @@ function loadYouTubeAPI(): Promise<void> {
 export interface YTPlayerControls {
   play: () => void;
   pause: () => void;
+  mute: () => void;
+  unMute: () => void;
   seekTo: (seconds: number) => void;
   setVolume: (vol: number) => void;
   loadVideo: (videoId: string) => void;
   getDuration: () => number;
   getCurrentTime: () => number;
+  getPlayerState: () => number | null;
   isReady: boolean;
 }
 
@@ -92,11 +95,21 @@ export function useYouTubePlayer(
 
   const play = useCallback(() => { try { playerRef.current?.playVideo?.(); } catch { /* */ } }, []);
   const pause = useCallback(() => { try { playerRef.current?.pauseVideo?.(); } catch { /* */ } }, []);
+  const mute = useCallback(() => { try { playerRef.current?.mute?.(); } catch { /* */ } }, []);
+  const unMute = useCallback(() => { try { playerRef.current?.unMute?.(); } catch { /* */ } }, []);
   const seekTo = useCallback((s: number) => { try { playerRef.current?.seekTo?.(s, true); } catch { /* */ } }, []);
   const setVolume = useCallback((v: number) => { try { playerRef.current?.setVolume?.(v); } catch { /* */ } }, []);
   const loadVideo = useCallback((id: string) => { try { playerRef.current?.loadVideoById?.(id); } catch { /* */ } }, []);
   const getDuration = useCallback(() => { try { return playerRef.current?.getDuration?.() || 0; } catch { return 0; } }, []);
   const getCurrentTime = useCallback(() => { try { return playerRef.current?.getCurrentTime?.() || 0; } catch { return 0; } }, []);
+  const getPlayerState = useCallback(() => {
+    try {
+      const state = playerRef.current?.getPlayerState?.();
+      return typeof state === 'number' ? state : null;
+    } catch {
+      return null;
+    }
+  }, []);
 
-  return { play, pause, seekTo, setVolume, loadVideo, getDuration, getCurrentTime, isReady };
+  return { play, pause, mute, unMute, seekTo, setVolume, loadVideo, getDuration, getCurrentTime, getPlayerState, isReady };
 }
