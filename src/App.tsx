@@ -115,6 +115,8 @@ export default function App() {
   const currentTrack = idx >= 0 && idx < queue.length ? queue[idx] : null;
   const currentTrackId = currentTrack?.videoId;
   const likedSet = new Set(likedSongs.map(s => s.videoId));
+  const seekPct = dur > 0 ? Math.min(100, Math.max(0, (time / dur) * 100)) : 0;
+  const volPct = Math.min(100, Math.max(0, vol));
   const completedSet = new Set(completedTracks);
   const markCompleted = useCallback((videoId: string | null | undefined) => {
     if (!videoId) return;
@@ -361,6 +363,7 @@ export default function App() {
                 player.seekTo(nextTime);
               }}
               className="seek-slider w-full"
+              style={{ background: `linear-gradient(to right, #ef4444 0%, #ef4444 ${seekPct}%, rgba(255,255,255,0.18) ${seekPct}%, rgba(255,255,255,0.18) 100%)` }}
             />
             <span className="w-10">{fmtTime(dur)}</span>
           </div>
@@ -398,6 +401,7 @@ export default function App() {
                 value={Math.max(0, Math.min(100, vol))}
                 onChange={(e) => setVol(Number(e.target.value))}
                 className="volume-slider w-28"
+                style={{ background: `linear-gradient(to right, #ef4444 0%, #ef4444 ${volPct}%, rgba(255,255,255,0.18) ${volPct}%, rgba(255,255,255,0.18) 100%)` }}
               />
             </div>
           </div>
