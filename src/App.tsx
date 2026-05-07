@@ -1124,29 +1124,38 @@ export default function App() {
         <>
           <div className="fixed inset-0 z-[103] bg-black/55 backdrop-blur-[2px] cursor-pointer" onClick={() => setShowNowPlayingSidebar(false)} />
           <aside className="fixed right-0 top-0 h-full w-full sm:w-[420px] lg:w-[460px] z-[104] bg-[linear-gradient(160deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))] border-l border-white/15 shadow-[0_20px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl flex flex-col animate-slide-in-right">
-            <div className="flex items-center justify-between px-4 py-4 border-b border-white/10">
+            <div className="flex items-center justify-between px-4 sm:px-5 py-4 border-b border-white/10">
               <div>
                 <p className="text-[10px] uppercase tracking-[0.2em] text-white/50">Now playing</p>
                 <h3 className="text-base font-bold truncate">{currentTrack.title}</h3>
               </div>
-              <button onClick={() => setShowNowPlayingSidebar(false)} className="px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-bold uppercase tracking-wide">Close</button>
+              <button
+                onClick={() => setShowNowPlayingSidebar(false)}
+                className="mr-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-bold uppercase tracking-wide whitespace-nowrap"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M18.3 5.71L12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.3-6.3z" />
+                </svg>
+                Close
+              </button>
             </div>
             <div className="p-4 sm:p-5 overflow-y-auto cscr space-y-4 flex-1">
               <div className="rounded-2xl border border-white/15 bg-white/10 p-3">
-                <img src={currentTrack.thumbnailHigh || currentTrack.thumbnail} alt={currentTrack.title} className="w-full aspect-video object-cover rounded-lg mb-3" />
+                {!isCurrentVideoUnavailable ? (
+                  <iframe
+                    title={`Now playing ${currentTrack.title}`}
+                    src={`https://www.youtube.com/embed/${currentTrack.videoId}?autoplay=1&rel=0`}
+                    allow="autoplay; encrypted-media; picture-in-picture"
+                    allowFullScreen
+                    className="w-full aspect-video rounded-lg mb-3"
+                  />
+                ) : (
+                  <img src={currentTrack.thumbnailHigh || currentTrack.thumbnail} alt={currentTrack.title} className="w-full aspect-video object-cover rounded-lg mb-3" />
+                )}
                 <p className="text-sm font-bold">{currentTrack.title}</p>
                 <p className="text-xs text-white/60 mt-1">{currentTrack.channelTitle}</p>
                 <p className="text-xs text-white/45 mt-1">{currentTrack.durationFormatted}</p>
-                {!isCurrentVideoUnavailable ? (
-                  <a
-                    href={`https://www.youtube.com/watch?v=${currentTrack.videoId}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-block mt-3 px-3 py-1.5 rounded-full bg-red-600 hover:bg-red-500 text-xs font-bold uppercase tracking-wide"
-                  >
-                    Open video
-                  </a>
-                ) : (
+                {isCurrentVideoUnavailable && (
                   <p className="text-xs text-yellow-300/90 mt-3">Current video unavailable. Showing YouTube API template recommendations below.</p>
                 )}
               </div>
