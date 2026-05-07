@@ -647,7 +647,15 @@ export default function App() {
   return (
     <div className="flex h-screen bg-[#121212] text-white font-sans select-none overflow-hidden relative">
       <aside className={`${collapsed ? 'w-[72px]' : 'w-[280px]'} bg-black flex flex-col transition-all border-r border-white/5`}>
-        <div className="p-6 flex items-center gap-3"><div className="w-10 h-10 bg-red-600 rounded-full flex items-center justify-center shadow-lg flex-shrink-0"><svg width="22" height="22" viewBox="0 0 24 24" fill="white"><path d="M10 15l5.19-3L10 9v6m11.56-7.83c.13.47.22 1.1.28 1.9.07.8.1 1.49.1 2.09L22 12c0 2.19-.16 3.8-.44 4.83-.25.9-.83 1.48-1.73 1.73-.47.13-1.33.22-2.65.28-1.3.07-2.49.1-3.59.1L12 19c-4.19 0-6.8-.16-7.83-.44-.9-.25-1.48-.83-1.73-1.73-.13-.47-.22-1.1-.28-1.9-.07-.8-.1-1.49-.1-2.09L2 12c0-2.19.16-3.8.44-4.83.25-.9.83-1.48 1.73-1.73.47-.13 1.33-.22 2.65-.28 1.3-.07 2.49-.1 3.59-.1L12 5c4.19 0 6.8.16 7.83.44.9.25 1.48.83 1.73 1.73z" /></svg></div>{!collapsed && <span className="text-xl font-black italic tracking-tighter uppercase">Music</span>}</div>
+        <div className="p-6 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[linear-gradient(145deg,#1f2937,#0b0f19)] border border-white/15 flex items-center justify-center shadow-lg flex-shrink-0 relative overflow-visible">
+            <span className="text-sm font-black text-white">M</span>
+            <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-red-600 flex items-center justify-center ring-2 ring-black">
+              <svg width="8" height="8" viewBox="0 0 24 24" fill="white"><path d="M8 5v14l11-7z" /></svg>
+            </span>
+          </div>
+          {!collapsed && <span className="text-xl font-black tracking-tight">Muzic</span>}
+        </div>
         <nav className="flex flex-col gap-1 px-2">
           <SBtn on={view === 'home' && !showLiked && !viewUPL} click={navHome} ico={<path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z" />} label={collapsed ? '' : 'Home'} />
           <SBtn on={view === 'search'} click={() => { setView('search'); setShowLiked(false); setViewUPL(null); }} ico={<path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />} label={collapsed ? '' : 'Explore'} />
