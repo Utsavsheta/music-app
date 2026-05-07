@@ -115,11 +115,16 @@ export default function App() {
   const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
   const [artistPanel, setArtistPanel] = useState<{ name: string; songs: YTVideo[]; loading: boolean } | null>(null);
   const [showNowPlayingSidebar, setShowNowPlayingSidebar] = useState(false);
+  const [sidebarSyncTime, setSidebarSyncTime] = useState(0);
   const [unavailableVideoIds, setUnavailableVideoIds] = useState<string[]>([]);
   const [recommendedSongs, setRecommendedSongs] = useState<YTVideo[]>([]);
   const [recommendedLoading, setRecommendedLoading] = useState(false);
   const { user, login, logout, authReady, authError } = useGoogleAuth();
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const exploreNewReleasesRef = useRef<HTMLElement | null>(null);
+  const exploreMoodsRef = useRef<HTMLElement | null>(null);
+  const explorePodcastsRef = useRef<HTMLElement | null>(null);
+  const exploreTrendingRef = useRef<HTMLElement | null>(null);
   const restoredPlaybackForUserRef = useRef<string | null>(null);
   const lastPlaybackSavedRef = useRef<{ videoId: string; position: number; savedAt: number } | null>(null);
 
@@ -478,6 +483,50 @@ export default function App() {
       setArtistPanel({ name: artistName, songs: [], loading: false });
     }
   };
+
+  const handleExploreChipClick = (chip: string) => {
+    const normalized = chip.trim().toLowerCase();
+    const scrollToSection = (section: HTMLElement | null) => {
+      if (!section) return false;
+      section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return true;
+    };
+    if (view === 'search' && !query.trim()) {
+      if (normalized === 'new releases' && scrollToSection(exploreNewReleasesRef.current)) return;
+      if (normalized === 'charts' && scrollToSection(exploreTrendingRef.current)) return;
+      if (normalized === 'moods & genres' && scrollToSection(exploreMoodsRef.current)) return;
+      if (normalized === 'podcasts' && scrollToSection(explorePodcastsRef.current)) return;
+    }
+    if (normalized === 'new releases') {
+      doSearch('new albums and singles');
+      return;
+    }
+    if (normalized === 'charts') {
+      doSearch('top music charts');
+      return;
+    }
+    if (normalized === 'moods & genres') {
+      doSearch('mood based songs');
+      return;
+    }
+    if (normalized === 'podcasts') {
+      doSearch('popular music podcasts');
+      return;
+    }
+    doSearch(chip);
+  };
+
+  const openNowPlayingSidebar = () => {
+    const syncAt = Math.max(0, Math.floor(time || 0));
+    setSidebarSyncTime(syncAt);
+    setShowNowPlayingSidebar(true);
+  };
+
+  useEffect(() => {
+    if (!showNowPlayingSidebar || !currentTrack?.videoId) return;
+    const syncAt = Math.max(0, Math.floor(time || 0));
+    setSidebarSyncTime(syncAt);
+  }, [currentTrack?.videoId, showNowPlayingSidebar, playing]);
 
   useEffect(() => {
     async function loadRecommendedSongs() {
@@ -972,13 +1021,13 @@ export default function App() {
             <div className="p-6 space-y-10">
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {['New releases', 'Charts', 'Moods & genres', 'Podcasts'].map((chip) => (
-                  <button key={chip} className="rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 px-4 py-3 text-sm font-bold text-left">
+                  <button key={chip} onClick={() => handleExploreChipClick(chip)} className="rounded-xl bg-white/10 hover:bg-white/15 border border-white/10 px-4 py-3 text-sm font-bold text-left">
                     {chip}
                   </button>
                 ))}
               </div>
 
-              <section>
+              <section ref={exploreNewReleasesRef}>
                 <h2 className="text-4xl font-black tracking-tight mb-4">New albums & singles</h2>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
                   {(latestSongs.length ? latestSongs : trending).slice(0, 12).map((v, i) => (
@@ -991,7 +1040,7 @@ export default function App() {
                 </div>
               </section>
 
-              <section>
+              <section ref={exploreMoodsRef}>
                 <h2 className="text-4xl font-black tracking-tight mb-4">Moods & genres</h2>
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2">
                   {moodsGenres.map((mood) => (
@@ -1002,7 +1051,7 @@ export default function App() {
                 </div>
               </section>
 
-              <section>
+              <section ref={explorePodcastsRef}>
                 <h2 className="text-4xl font-black tracking-tight mb-4">Popular episodes</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                   {popularEpisodes.slice(0, 9).map((v, i) => (
@@ -1017,7 +1066,7 @@ export default function App() {
                 </div>
               </section>
 
-              <section>
+              <section ref={exploreTrendingRef}>
                 <h2 className="text-4xl font-black tracking-tight mb-4">Trending</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                   {charts.slice(0, 12).map((v, i) => (
@@ -1077,7 +1126,7 @@ export default function App() {
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3 w-1/3 min-w-0">
               {currentTrack ? <>
-                <button onClick={() => setShowNowPlayingSidebar(true)} className="flex items-center gap-3 min-w-0 text-left hover:opacity-90 transition">
+                <button onClick={openNowPlayingSidebar} className="flex items-center gap-3 min-w-0 text-left hover:opacity-90 transition">
                   <div className="w-14 h-14 rounded-lg overflow-hidden relative flex-shrink-0">
                     {currentTrack.thumbnail ? <img src={currentTrack.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(currentTrack.videoId) }} />}
                     {playing && <div className="absolute inset-0 bg-black/40 flex items-center justify-center"><div className="flex items-end gap-0.5 h-4"><span className="w-[2.5px] bg-red-500 rounded-full h-[40%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[90%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[60%] animate-pulse" /></div></div>}
@@ -1124,14 +1173,14 @@ export default function App() {
         <>
           <div className="fixed inset-0 z-[103] bg-black/55 backdrop-blur-[2px] cursor-pointer" onClick={() => setShowNowPlayingSidebar(false)} />
           <aside className="fixed right-0 top-0 h-full w-full sm:w-[420px] lg:w-[460px] z-[104] bg-[linear-gradient(160deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))] border-l border-white/15 shadow-[0_20px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl flex flex-col animate-slide-in-right">
-            <div className="flex items-center justify-between px-4 sm:px-5 py-4 border-b border-white/10">
-              <div>
+            <div className="flex items-center justify-between gap-3 px-4 sm:px-5 py-4 border-b border-white/10">
+              <div className="min-w-0 flex-1">
                 <p className="text-[10px] uppercase tracking-[0.2em] text-white/50">Now playing</p>
                 <h3 className="text-base font-bold truncate">{currentTrack.title}</h3>
               </div>
               <button
                 onClick={() => setShowNowPlayingSidebar(false)}
-                className="mr-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-bold uppercase tracking-wide whitespace-nowrap"
+                className="shrink-0 mr-1 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-bold uppercase tracking-wide whitespace-nowrap"
               >
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                   <path d="M18.3 5.71L12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.3 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.3-6.3z" />
@@ -1143,8 +1192,9 @@ export default function App() {
               <div className="rounded-2xl border border-white/15 bg-white/10 p-3">
                 {!isCurrentVideoUnavailable ? (
                   <iframe
+                    key={`${currentTrack.videoId}-${playing ? 'play' : 'pause'}-${sidebarSyncTime}`}
                     title={`Now playing ${currentTrack.title}`}
-                    src={`https://www.youtube.com/embed/${currentTrack.videoId}?autoplay=1&rel=0`}
+                    src={`https://www.youtube.com/embed/${currentTrack.videoId}?autoplay=${playing ? 1 : 0}&start=${sidebarSyncTime}&mute=1&rel=0&controls=0&modestbranding=1&iv_load_policy=3&disablekb=1&playsinline=1`}
                     allow="autoplay; encrypted-media; picture-in-picture"
                     allowFullScreen
                     className="w-full aspect-video rounded-lg mb-3"
@@ -1161,7 +1211,7 @@ export default function App() {
               </div>
 
               <div>
-                <p className="text-xs uppercase tracking-[0.18em] text-white/55 mb-2">Recommended songs</p>
+                <p className="text-xs uppercase tracking-[0.18em] text-white/55 mb-2">Recommended videos</p>
                 {recommendedLoading ? <SongCardLoader count={4} /> : (
                   <div className="space-y-2">
                     {recommendedSongs.length ? recommendedSongs.map((v, i) => (
