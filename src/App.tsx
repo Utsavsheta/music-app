@@ -45,6 +45,16 @@ function SongCardLoader({ count = 8 }: { count?: number }) {
 
 const LAST_PLAYBACK_STORAGE_PREFIX = 'last_playback:';
 
+function ListRowLoader({ count = 6 }: { count?: number }) {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={`row-loader-${i}`} className="h-14 rounded-xl bg-white/5 border border-white/10 shimmer" />
+      ))}
+    </div>
+  );
+}
+
 function Hart({ on, sz = 18 }: { on: boolean; sz?: number }) {
   return (
     <svg width={sz} height={sz} viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill={on ? '#ef4444' : 'none'} stroke={on ? '#ef4444' : 'currentColor'} strokeWidth="2.5" /></svg>
@@ -88,6 +98,7 @@ export default function App() {
   const [popularEpisodes, setPopularEpisodes] = useState<YTVideo[]>([]);
   const [newMusicVideos, setNewMusicVideos] = useState<YTVideo[]>([]);
   const [bollywoodIndian, setBollywoodIndian] = useState<YTVideo[]>([]);
+  const [ytCommunityPlaylists, setYtCommunityPlaylists] = useState<YTPlaylist[]>([]);
   const [srVids, setSrVids] = useState<YTVideo[]>([]);
   const [srPls, setSrPls] = useState<YTPlaylist[]>([]);
   const [ytPl, setYtPl] = useState<YTPlaylist | null>(null);
@@ -103,6 +114,10 @@ export default function App() {
   const [completedTracks, setCompletedTracks] = useState<string[]>([]);
   const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
   const [artistPanel, setArtistPanel] = useState<{ name: string; songs: YTVideo[]; loading: boolean } | null>(null);
+  const [showNowPlayingSidebar, setShowNowPlayingSidebar] = useState(false);
+  const [unavailableVideoIds, setUnavailableVideoIds] = useState<string[]>([]);
+  const [recommendedSongs, setRecommendedSongs] = useState<YTVideo[]>([]);
+  const [recommendedLoading, setRecommendedLoading] = useState(false);
   const { user, login, logout, authReady, authError } = useGoogleAuth();
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const restoredPlaybackForUserRef = useRef<string | null>(null);
@@ -135,6 +150,7 @@ export default function App() {
   const currentTrack = idx >= 0 && idx < queue.length ? queue[idx] : null;
   const currentTrackId = currentTrack?.videoId;
   const likedSet = new Set(likedSongs.map(s => s.videoId));
+  const isCurrentVideoUnavailable = !!currentTrackId && unavailableVideoIds.includes(currentTrackId);
   const seekPct = dur > 0 ? Math.min(100, Math.max(0, (time / dur) * 100)) : 0;
   const volPct = Math.min(100, Math.max(0, vol));
   const visiblePublicPls = publicPls.filter((p) => p.userId !== user?.id);
@@ -150,12 +166,6 @@ export default function App() {
     setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 2500);
   };
 
-  const lastAuthErrRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (!authError || authError === lastAuthErrRef.current) return;
-    lastAuthErrRef.current = authError;
-    toast(authError);
-  }, [authError]);
   useEffect(() => {
     setAvatarLoadFailed(false);
   }, [user?.picture]);
@@ -205,6 +215,10 @@ export default function App() {
   }, [goNext, markCompleted]);
 
   const player = useYouTubePlayer('yt-player-hidden', onState, (code) => {
+    const failedId = currentTrackIdRef.current;
+    if (failedId) {
+      setUnavailableVideoIds((prev) => (prev.includes(failedId) ? prev : [...prev, failedId]));
+    }
     toast(`Playback error (${code})`);
     (goNext as any)(false);
   });
@@ -256,7 +270,7 @@ export default function App() {
     async function init() {
       setLoading(true);
       try {
-        const [t, pub, indian, latest, forYou, episodes, newVideos] = await Promise.all([
+        const [t, pub, indian, latest, forYou, episodes, newVideos, communityPls] = await Promise.all([
           fetchTrendingMusic(12),
           DB.fetchPublicPlaylists(),
           searchVideos('Bollywood Indian latest songs', 12),
@@ -264,6 +278,7 @@ export default function App() {
           searchVideos('music videos for you', 12),
           searchVideos('popular podcast episodes india', 12),
           searchVideos('new music videos india', 12),
+          searchPlaylists('trending community playlists music', 8),
         ]);
         setTrending(t.videos);
         setTkTrend(t.nextPageToken);
@@ -273,9 +288,9 @@ export default function App() {
         setMusicForYou(forYou.videos);
         setPopularEpisodes(episodes.videos);
         setNewMusicVideos(newVideos.videos);
-      } catch (err: any) {
-        if (err.message === 'ADD_MORE_TOKENS') toast('Error: Add more API key tokens');
-        else toast('Load failed');
+        setYtCommunityPlaylists(communityPls.playlists);
+      } catch {
+        // silent fail for initial data load
       }
       setLoading(false);
     }
@@ -336,7 +351,6 @@ export default function App() {
           player.pause();
           setPlaying(false);
         }, 450);
-        toast(`Loaded last song: ${saved.video.title}`);
       } catch {
         // silently skip resume when API is unavailable
       }
@@ -357,8 +371,8 @@ export default function App() {
       } else if (view === 'playlist' && ytPl && tkPl) {
         const r = await fetchPlaylistItems(ytPl.id, 20, tkPl); setPlVids(p => [...p, ...r.videos]); setTkPl(r.nextPageToken);
       }
-    } catch (err: any) {
-      if (err.message === 'ADD_MORE_TOKENS') toast('Error: Add more API key tokens');
+    } catch {
+      // silent fail for background pagination fetch
     }
     setLoadMore(false);
   };
@@ -443,7 +457,7 @@ export default function App() {
     setQuery(q); setView('search'); setLoading(true);
     setTimeout(async () => {
       try { const [v, p] = await Promise.all([searchVideos(q, 12), searchPlaylists(q, 8)]); setSrVids(v.videos); setTkSrV(v.nextPageToken); setSrPls(p.playlists); setTkSrP(p.nextPageToken); }
-      catch (err: any) { if (err.message === 'ADD_MORE_TOKENS') toast('Error: Add more API key tokens'); else toast('Search failed'); }
+      catch { setSrVids([]); setSrPls([]); setTkSrV(null); setTkSrP(null); }
       setLoading(false);
     }, 500);
   };
@@ -462,9 +476,26 @@ export default function App() {
       setArtistPanel({ name: artistName, songs: filtered.length ? filtered : result.videos, loading: false });
     } catch {
       setArtistPanel({ name: artistName, songs: [], loading: false });
-      toast('Failed to load artist songs');
     }
   };
+
+  useEffect(() => {
+    async function loadRecommendedSongs() {
+      if (!showNowPlayingSidebar || !currentTrack) {
+        setRecommendedSongs([]);
+        return;
+      }
+      setRecommendedLoading(true);
+      try {
+        const result = await searchVideos(`${currentTrack.title} ${currentTrack.channelTitle}`, 6);
+        setRecommendedSongs(result.videos.filter((video) => video.videoId !== currentTrack.videoId));
+      } catch {
+        setRecommendedSongs([]);
+      }
+      setRecommendedLoading(false);
+    }
+    loadRecommendedSongs();
+  }, [currentTrack, showNowPlayingSidebar]);
 
   const playSongFromList = useCallback((list: YTVideo[], startIndex: number) => {
     if (!player.isReady || !list.length || startIndex < 0 || startIndex >= list.length) return;
@@ -567,7 +598,10 @@ export default function App() {
     try {
       const r = await fetchPlaylistItems(pl.id, 20);
       setPlVids(r.videos); setTkPl(r.nextPageToken);
-    } catch { toast('Fail'); }
+    } catch {
+      setPlVids([]);
+      setTkPl(null);
+    }
     setLoadPl(false);
   };
 
@@ -578,9 +612,7 @@ export default function App() {
   const quickPicks = (latestSongs.length ? latestSongs : trending).slice(0, 12);
   const charts = trending.slice(0, 10);
   const communityPlaylists = visiblePublicPls.slice(0, 8);
-  const trendingCommunityPlaylists = [...visiblePublicPls]
-    .sort((a, b) => (b.songs?.length || 0) - (a.songs?.length || 0))
-    .slice(0, 8);
+  const trendingCommunityPlaylists = ytCommunityPlaylists.slice(0, 8);
   const moodsGenres = ['Hindi', 'Feel good', '2000s', 'Romance', 'Sleep', 'Workout', '2010s', 'Sad', 'Commute', 'Monsoon', '1960s', 'Jazz', 'Folk & acoustic', 'Desi hip-hop', 'African', 'Energize', '1980s', 'Hindustani classical'];
   const greeting = (() => {
     const h = new Date().getHours();
@@ -668,7 +700,7 @@ export default function App() {
               <path d="M20 11H7.83l5.58-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
             </svg>
           </button>
-          <div className="flex-1 max-w-xl relative">
+          <div className="flex-1 min-w-0 relative">
             <input type="text" placeholder="Search…" value={query} onChange={e => setQuery(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { (e.target as any).blur(); doSearch((e.target as any).value); } }} className="w-full bg-white/5 hover:bg-white/10 focus:bg-white/15 text-white rounded-full px-5 py-2 text-sm outline-none transition border border-transparent focus:border-white/10" />
           </div>
           <div className="ml-auto flex items-center gap-3">
@@ -712,32 +744,34 @@ export default function App() {
                   <h2 className="text-2xl font-black tracking-tight">Quick picks</h2>
                   <button onClick={() => { if (quickPicks.length) playAll(quickPicks); }} className="text-xs bg-white text-black px-4 py-1.5 rounded-full font-bold uppercase tracking-widest">Play all</button>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
-                  {quickPicks.map((v, i) => (
-                    <button key={`${v.videoId}-quick`} onClick={() => playSongFromList(quickPicks, i)} className="group flex items-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-2.5 text-left transition">
-                      <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0">
-                        {v.thumbnail ? <img src={v.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); fetchByTitle(v.title); }}
-                          className="text-sm font-bold truncate text-left hover:underline w-full"
-                          title={`Find songs like ${v.title}`}
-                        >
-                          {v.title}
-                        </button>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); openArtistSection(v.channelTitle); }}
-                          className="text-xs text-white/55 truncate text-left hover:text-white hover:underline w-full"
-                          title={`View songs by ${v.channelTitle}`}
-                        >
-                          {v.channelTitle}
-                        </button>
-                      </div>
-                      <span className="text-[10px] text-white/55 font-mono">{v.durationFormatted}</span>
-                    </button>
-                  ))}
-                </div>
+                {quickPicks.length ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                    {quickPicks.map((v, i) => (
+                      <button key={`${v.videoId}-quick`} onClick={() => playSongFromList(quickPicks, i)} className="group flex items-center gap-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl p-2.5 text-left transition">
+                        <div className="w-14 h-14 rounded-lg overflow-hidden flex-shrink-0">
+                          {v.thumbnail ? <img src={v.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(v.videoId) }} />}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); fetchByTitle(v.title); }}
+                            className="text-sm font-bold truncate text-left hover:underline w-full"
+                            title={`Find songs like ${v.title}`}
+                          >
+                            {v.title}
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); openArtistSection(v.channelTitle); }}
+                            className="text-xs text-white/55 truncate text-left hover:text-white hover:underline w-full"
+                            title={`View songs by ${v.channelTitle}`}
+                          >
+                            {v.channelTitle}
+                          </button>
+                        </div>
+                        <span className="text-[10px] text-white/55 font-mono">{v.durationFormatted}</span>
+                      </button>
+                    ))}
+                  </div>
+                ) : <ListRowLoader count={6} />}
               </section>
 
               <section>
@@ -782,6 +816,7 @@ export default function App() {
 
               <section>
                 <h2 className="text-xl font-bold mb-4">Trending music</h2>
+                {trending.length ? (
                 <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
                   {trending.map((v, i) => (
                     <div key={v.videoId} className={`group bg-white/5 p-3 rounded-2xl hover:bg-white/10 transition cursor-pointer animate-card-in ${completedSet.has(v.videoId) ? 'ring-1 ring-emerald-400/40' : ''}`} onClick={() => playSongFromList(trending, i)}>
@@ -811,6 +846,7 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                ) : <SongCardLoader count={6} />}
               </section>
 
               <section>
@@ -831,7 +867,7 @@ export default function App() {
                       </button>
                     ))}
                   </div>
-                ) : <p className="text-sm text-white/55">No public community playlists yet.</p>}
+                ) : <SongCardLoader count={8} />}
               </section>
 
               <section>
@@ -844,6 +880,7 @@ export default function App() {
                     Play chart
                   </button>
                 </div>
+                {charts.length ? (
                 <div className="space-y-2">
                   {charts.map((song, i) => (
                     <button
@@ -866,6 +903,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                ) : <ListRowLoader count={8} />}
               </section>
 
               <section>
@@ -903,22 +941,22 @@ export default function App() {
               <section>
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-xl font-bold">Trending community playlists</h2>
-                  <span className="text-[10px] uppercase tracking-[0.2em] text-white/45">Most songs</span>
+                  <span className="text-[10px] uppercase tracking-[0.2em] text-white/45">From YouTube</span>
                 </div>
                 {trendingCommunityPlaylists.length ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                     {trendingCommunityPlaylists.map((pl) => (
                       <button
                         key={`tr-community-${pl.id}`}
-                        onClick={() => navUPL(pl)}
+                        onClick={() => openYTPl(pl)}
                         className="text-left rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition p-4"
                       >
-                        <p className="text-sm font-bold truncate">{pl.name}</p>
-                        <p className="text-xs text-white/55 mt-1">{pl.songs.length} songs</p>
+                        <p className="text-sm font-bold truncate">{pl.title}</p>
+                        <p className="text-xs text-white/55 mt-1">{pl.itemCount} songs</p>
                       </button>
                     ))}
                   </div>
-                ) : <p className="text-sm text-white/55">Trending playlists will appear here once community playlists are available.</p>}
+                ) : <SongCardLoader count={8} />}
               </section>
             </div>
           )}
@@ -1031,17 +1069,19 @@ export default function App() {
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3 w-1/3 min-w-0">
               {currentTrack ? <>
-                <div className="w-14 h-14 rounded-lg overflow-hidden relative flex-shrink-0">
-                  {currentTrack.thumbnail ? <img src={currentTrack.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(currentTrack.videoId) }} />}
-                  {playing && <div className="absolute inset-0 bg-black/40 flex items-center justify-center"><div className="flex items-end gap-0.5 h-4"><span className="w-[2.5px] bg-red-500 rounded-full h-[40%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[90%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[60%] animate-pulse" /></div></div>}
-                </div>
-                <div className="min-w-0">
-                  <div className="text-sm font-bold truncate flex items-center gap-2">
-                    {currentTrack.title}
-                    {completedSet.has(currentTrack.videoId) && <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/90 uppercase tracking-wider">Played</span>}
+                <button onClick={() => setShowNowPlayingSidebar(true)} className="flex items-center gap-3 min-w-0 text-left hover:opacity-90 transition">
+                  <div className="w-14 h-14 rounded-lg overflow-hidden relative flex-shrink-0">
+                    {currentTrack.thumbnail ? <img src={currentTrack.thumbnail} className="w-full h-full object-cover" alt="" /> : <div className="w-full h-full" style={{ background: grad(currentTrack.videoId) }} />}
+                    {playing && <div className="absolute inset-0 bg-black/40 flex items-center justify-center"><div className="flex items-end gap-0.5 h-4"><span className="w-[2.5px] bg-red-500 rounded-full h-[40%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[90%] animate-pulse" /><span className="w-[2.5px] bg-red-500 rounded-full h-[60%] animate-pulse" /></div></div>}
                   </div>
-                  <div className="text-xs text-white/50 truncate">{currentTrack.channelTitle}</div>
-                </div>
+                  <div className="min-w-0">
+                    <div className="text-sm font-bold truncate flex items-center gap-2">
+                      {currentTrack.title}
+                      {completedSet.has(currentTrack.videoId) && <span className="text-[9px] px-2 py-0.5 rounded-full bg-emerald-500/90 uppercase tracking-wider">Played</span>}
+                    </div>
+                    <div className="text-xs text-white/50 truncate">{currentTrack.channelTitle}</div>
+                  </div>
+                </button>
                 <button onClick={() => handleLike(currentTrack)} className="flex-shrink-0 ml-2 text-white/40 hover:text-white transition"><Hart on={likedSet.has(currentTrack.videoId)} sz={20} /></button>
               </> : <span className="text-sm text-white/20 font-bold uppercase tracking-widest italic">No music selected</span>}
             </div>
@@ -1072,9 +1112,61 @@ export default function App() {
         </div>
       </footer>
 
+      {showNowPlayingSidebar && currentTrack && (
+        <>
+          <div className="fixed inset-0 z-[103] bg-black/55 backdrop-blur-[2px] cursor-pointer" onClick={() => setShowNowPlayingSidebar(false)} />
+          <aside className="fixed right-0 top-0 h-full w-full sm:w-[420px] lg:w-[460px] z-[104] bg-[linear-gradient(160deg,rgba(255,255,255,0.18),rgba(255,255,255,0.06))] border-l border-white/15 shadow-[0_20px_80px_rgba(0,0,0,0.65)] backdrop-blur-2xl flex flex-col animate-slide-in-right">
+            <div className="flex items-center justify-between px-4 py-4 border-b border-white/10">
+              <div>
+                <p className="text-[10px] uppercase tracking-[0.2em] text-white/50">Now playing</p>
+                <h3 className="text-base font-bold truncate">{currentTrack.title}</h3>
+              </div>
+              <button onClick={() => setShowNowPlayingSidebar(false)} className="px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 border border-white/15 text-xs font-bold uppercase tracking-wide">Close</button>
+            </div>
+            <div className="p-4 sm:p-5 overflow-y-auto cscr space-y-4 flex-1">
+              <div className="rounded-2xl border border-white/15 bg-white/10 p-3">
+                <img src={currentTrack.thumbnailHigh || currentTrack.thumbnail} alt={currentTrack.title} className="w-full aspect-video object-cover rounded-lg mb-3" />
+                <p className="text-sm font-bold">{currentTrack.title}</p>
+                <p className="text-xs text-white/60 mt-1">{currentTrack.channelTitle}</p>
+                <p className="text-xs text-white/45 mt-1">{currentTrack.durationFormatted}</p>
+                {!isCurrentVideoUnavailable ? (
+                  <a
+                    href={`https://www.youtube.com/watch?v=${currentTrack.videoId}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-block mt-3 px-3 py-1.5 rounded-full bg-red-600 hover:bg-red-500 text-xs font-bold uppercase tracking-wide"
+                  >
+                    Open video
+                  </a>
+                ) : (
+                  <p className="text-xs text-yellow-300/90 mt-3">Current video unavailable. Showing YouTube API template recommendations below.</p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-xs uppercase tracking-[0.18em] text-white/55 mb-2">Recommended songs</p>
+                {recommendedLoading ? <SongCardLoader count={4} /> : (
+                  <div className="space-y-2">
+                    {recommendedSongs.length ? recommendedSongs.map((v, i) => (
+                      <button key={`recommended-${v.videoId}`} onClick={() => { playSongFromList(recommendedSongs, i); setShowNowPlayingSidebar(false); }} className="w-full text-left grid grid-cols-[52px_1fr] gap-2 items-center rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 p-2 transition">
+                        <img src={v.thumbnail} alt={v.title} className="w-12 h-12 rounded-md object-cover" />
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold truncate">{v.title}</p>
+                          <p className="text-[10px] text-white/55 truncate">{v.channelTitle}</p>
+                        </div>
+                      </button>
+                    )) : <p className="text-xs text-white/55">No recommendations found.</p>}
+                  </div>
+                )}
+              </div>
+            </div>
+          </aside>
+        </>
+      )}
+
       {showCreate && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowCreate(false)}>
-          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 cursor-pointer" onClick={() => setShowCreate(false)}>
+          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5 cursor-pointer" onClick={e => e.stopPropagation()}>
             <h3 className="text-xl font-bold mb-6 uppercase tracking-widest italic">Create Playlist</h3>
             <input type="text" value={newName} onChange={e => setNewName(e.target.value)} placeholder="Playlist Name" autoFocus onKeyDown={e => { e.stopPropagation(); if (e.key === 'Enter') handleCreatePl(); }} className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-red-500 mb-4 transition" />
             <div className="mb-6">
@@ -1092,8 +1184,8 @@ export default function App() {
         </div>
       )}
       {editPl && (
-        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setEditPl(null)}>
-          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[101] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 cursor-pointer" onClick={() => setEditPl(null)}>
+          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5 cursor-pointer" onClick={e => e.stopPropagation()}>
             <h3 className="text-xl font-bold mb-6 uppercase tracking-widest italic">Edit Playlist</h3>
             <input type="text" value={editName} onChange={e => setEditName(e.target.value)} placeholder="Playlist Name" className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-white outline-none focus:border-red-500 mb-4 transition" />
             <div className="mb-6">
@@ -1111,8 +1203,8 @@ export default function App() {
         </div>
       )}
       {artistPanel && (
-        <div className="fixed inset-0 z-[103] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setArtistPanel(null)}>
-          <div className="bg-[#222] rounded-2xl p-6 w-full max-w-2xl shadow-2xl border border-white/10 max-h-[80vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[103] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 cursor-pointer" onClick={() => setArtistPanel(null)}>
+          <div className="bg-[#222] rounded-2xl p-6 w-full max-w-2xl shadow-2xl border border-white/10 max-h-[80vh] overflow-hidden flex flex-col cursor-pointer" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between gap-4 mb-4">
               <div>
                 <p className="text-xs uppercase tracking-[0.22em] text-white/50">Artist section</p>
@@ -1155,8 +1247,8 @@ export default function App() {
         </div>
       )}
       {showLogoutConfirm && (
-        <div className="fixed inset-0 z-[102] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setShowLogoutConfirm(false)}>
-          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-[102] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 cursor-pointer" onClick={() => setShowLogoutConfirm(false)}>
+          <div className="bg-[#222] rounded-2xl p-8 w-full max-w-sm shadow-2xl border border-white/5 cursor-pointer" onClick={e => e.stopPropagation()}>
             <h3 className="text-xl font-bold mb-3 uppercase tracking-widest italic">Confirm Logout</h3>
             <p className="text-sm text-white/60 mb-6">Are you sure you want to logout from this account?</p>
             <div className="flex gap-3">
@@ -1166,10 +1258,10 @@ export default function App() {
           </div>
         </div>
       )}
-      {a2pTarget && (<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4" onClick={() => setA2pTarget(null)}><div className="bg-[#222] rounded-2xl p-6 w-full max-w-sm shadow-2xl flex flex-col max-h-[70vh] border border-white/5" onClick={e => e.stopPropagation()}><h3 className="text-xl font-bold mb-4 uppercase tracking-widest italic">Add to Playlist</h3><button onClick={() => { setA2pTarget(null); setShowCreate(true); }} className="flex items-center gap-3 p-3 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white mb-4 transition"><span className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center text-xl">+</span><span className="text-sm font-bold">New Playlist</span></button><div className="flex-1 overflow-y-auto cscr space-y-1">{userPls.map(p => (<button key={p.id} onClick={() => handleAddToPl(p.id, a2pTarget)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition text-left"><div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold" style={{ background: grad(p.id) }}>♪</div><div className="min-w-0 flex-1"><div className="text-sm font-bold truncate">{p.name}</div><div className="text-xs opacity-50">{p.songs.length} songs</div></div></button>))}</div><button onClick={() => setA2pTarget(null)} className="mt-4 py-3 rounded-xl bg-white/5 font-bold hover:bg-white/10 transition text-sm">Close</button></div></div>)}
+      {a2pTarget && (<div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 cursor-pointer" onClick={() => setA2pTarget(null)}><div className="bg-[#222] rounded-2xl p-6 w-full max-w-sm shadow-2xl flex flex-col max-h-[70vh] border border-white/5 cursor-pointer" onClick={e => e.stopPropagation()}><h3 className="text-xl font-bold mb-4 uppercase tracking-widest italic">Add to Playlist</h3><button onClick={() => { setA2pTarget(null); setShowCreate(true); }} className="flex items-center gap-3 p-3 rounded-xl border border-dashed border-white/10 text-white/40 hover:text-white mb-4 transition"><span className="w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center text-xl">+</span><span className="text-sm font-bold">New Playlist</span></button><div className="flex-1 overflow-y-auto cscr space-y-1">{userPls.map(p => (<button key={p.id} onClick={() => handleAddToPl(p.id, a2pTarget)} className="w-full flex items-center gap-3 p-3 rounded-xl hover:bg-white/5 transition text-left"><div className="w-10 h-10 rounded-lg flex items-center justify-center font-bold" style={{ background: grad(p.id) }}>♪</div><div className="min-w-0 flex-1"><div className="text-sm font-bold truncate">{p.name}</div><div className="text-xs opacity-50">{p.songs.length} songs</div></div></button>))}</div><button onClick={() => setA2pTarget(null)} className="mt-4 py-3 rounded-xl bg-white/5 font-bold hover:bg-white/10 transition text-sm">Close</button></div></div>)}
       <div className="fixed bottom-24 right-4 flex flex-col gap-2 z-[110] pointer-events-none">{toasts.map(t => <div key={t.id} className="bg-red-600 text-white text-[10px] font-black py-2 px-4 rounded-full shadow-2xl animate-slide-up uppercase tracking-widest">{t.msg}</div>)}</div>
       <div id="yt-player-hidden" className="fixed -left-[9999px] top-0 w-0 h-0 opacity-0 pointer-events-none" />
-      <style>{`.cscr::-webkit-scrollbar{width:6px}.cscr::-webkit-scrollbar-track{background:transparent}.cscr::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:9px} .line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden} .animate-slide-up{animation:su .3s ease-out} .glass-player{background:linear-gradient(120deg,rgba(255,255,255,.20),rgba(255,255,255,.11));box-shadow:0 24px 70px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.25)} .seek-slider,.volume-slider{-webkit-appearance:none;appearance:none;height:6px;border-radius:999px;background:rgba(255,255,255,.24);outline:none;cursor:pointer} .seek-slider::-webkit-slider-thumb,.volume-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444;box-shadow:0 2px 10px rgba(0,0,0,.4)} .seek-slider::-moz-range-thumb,.volume-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444} .seek-slider:disabled{opacity:.4;cursor:not-allowed} .animate-card-in{animation:cardIn .45s ease both} .shimmer{background:linear-gradient(90deg,rgba(255,255,255,.06) 0%,rgba(255,255,255,.16) 50%,rgba(255,255,255,.06) 100%);background-size:200% 100%;animation:sh 1.4s infinite} @keyframes su{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}} @keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}} @keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}`}</style>
+      <style>{`button{cursor:pointer}.cscr::-webkit-scrollbar{width:6px}.cscr::-webkit-scrollbar-track{background:transparent}.cscr::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:9px} .line-clamp-2{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden} .animate-slide-up{animation:su .3s ease-out} .animate-slide-in-right{animation:sir .28s ease-out} .glass-player{background:linear-gradient(120deg,rgba(255,255,255,.20),rgba(255,255,255,.11));box-shadow:0 24px 70px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.25)} .seek-slider,.volume-slider{-webkit-appearance:none;appearance:none;height:6px;border-radius:999px;background:rgba(255,255,255,.24);outline:none;cursor:pointer} .seek-slider::-webkit-slider-thumb,.volume-slider::-webkit-slider-thumb{-webkit-appearance:none;appearance:none;width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444;box-shadow:0 2px 10px rgba(0,0,0,.4)} .seek-slider::-moz-range-thumb,.volume-slider::-moz-range-thumb{width:14px;height:14px;border-radius:50%;background:#fff;border:2px solid #ef4444} .seek-slider:disabled{opacity:.4;cursor:not-allowed} .animate-card-in{animation:cardIn .45s ease both} .shimmer{background:linear-gradient(90deg,rgba(255,255,255,.06) 0%,rgba(255,255,255,.16) 50%,rgba(255,255,255,.06) 100%);background-size:200% 100%;animation:sh 1.4s infinite} @keyframes su{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}} @keyframes sir{from{opacity:0;transform:translateX(22px)}to{opacity:1;transform:translateX(0)}} @keyframes cardIn{from{opacity:0;transform:translateY(10px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}} @keyframes sh{from{background-position:200% 0}to{background-position:-200% 0}}`}</style>
     </div>
   );
 }
